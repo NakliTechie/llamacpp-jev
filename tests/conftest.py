@@ -40,15 +40,15 @@ class FakeBackend:
             parts.append(f"<|im_start|>{m['role']}\n{content}<|im_end|>\n")
         return "".join(parts)[: -len("<|im_end|>\n")] + ENDING
 
-    async def complete(self, prompt, *, images=None, n_probs=0, grammar=None):
-        self.calls.append({"prompt": prompt, "images": images, "n_probs": n_probs, "grammar": grammar})
+    async def complete(self, prompt, *, images=None, n_probs=0, grammar=None, id_slot=None):
+        self.calls.append({"prompt": prompt, "images": images, "n_probs": n_probs, "grammar": grammar, "id_slot": id_slot})
         if n_probs == 0:
-            return Generation(sampled="Question", prompt_tokens=50, cached_tokens=0)
+            return Generation(sampled="Question", prompt_tokens=50, cached_tokens=0, id_slot=2)
         labels = fake_labels()
         # label i gets logprob -i: A most likely, then B, C ...
         depth = min(n_probs, self.readout_depth or n_probs)
         logprobs = {token_id: -float(i) for i, (_, token_id) in enumerate(labels[:depth])}
-        return Generation(sampled="A", logprobs=logprobs, prompt_tokens=30, cached_tokens=50)
+        return Generation(sampled="A", logprobs=logprobs, prompt_tokens=30, cached_tokens=50, id_slot=id_slot)
 
 
 @pytest.fixture

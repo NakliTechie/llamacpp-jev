@@ -11,8 +11,9 @@ async def test_request_prefills_then_branches(api, payload):
     calls = [c for c in backend.calls if "prompt" in c]
     assert len(calls) == 4  # warm-up + 3 branches
     prefix = calls[0]["prompt"]
-    assert calls[0]["n_probs"] == 0 and calls[0]["grammar"] is None
+    assert calls[0]["n_probs"] == 0 and calls[0]["grammar"] is None and calls[0]["id_slot"] is None
     for branch in calls[1:]:
+        assert branch["id_slot"] == 2  # pinned to the warm-up's slot
         assert branch["prompt"].startswith(prefix)
         assert branch["prompt"].endswith("Answer:\n")
         assert branch["n_probs"] == 256

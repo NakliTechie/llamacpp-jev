@@ -36,6 +36,7 @@ class Generation:
     prompt_tokens: int = 0  # tokens processed this call
     cached_tokens: int = 0  # tokens reused from the slot / prompt cache
     prompt_ms: float = 0.0
+    id_slot: int | None = None  # slot that served the call; pin branches to it to reuse its state
 
     @property
     def total_prompt_tokens(self) -> int:
@@ -102,6 +103,7 @@ class LlamaClient:
         images: list[str] | None = None,
         n_probs: int = 0,
         grammar: str | None = None,
+        id_slot: int | None = None,
     ) -> Generation:
         body: dict[str, Any] = {
             "prompt": {"prompt_string": prompt, "multimodal_data": images} if images else prompt,
@@ -113,6 +115,8 @@ class LlamaClient:
         }
         if grammar:
             body["grammar"] = grammar
+        if id_slot is not None:
+            body["id_slot"] = id_slot
         async with self.slots:
             response = await self._post("/completion", body)
         try:
@@ -185,4 +189,5 @@ def parse_generation(data: dict, want_probs: bool) -> Generation:
         prompt_tokens=int(timings.get("prompt_n", 0)),
         cached_tokens=int(timings.get("cache_n", 0)),
         prompt_ms=float(timings.get("prompt_ms", 0.0)),
+        id_slot=int(data["id_slot"]) if data.get("id_slot") is not None else None,
     )

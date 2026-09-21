@@ -24,6 +24,14 @@ class Settings(BaseSettings):
     startup_timeout: float = Field(default=600, gt=0)
     temperature: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     top_n: int = Field(default=256, ge=2, description="n_probs requested per branch (readout depth).")
+    pin_slot: bool = Field(
+        default=True,
+        description=(
+            "Send every branch to the slot that ran the warm-up, so the prefix state (including "
+            "image tokens) is restored from that slot's checkpoint instead of re-processed by "
+            "other slots. Measured 2026-09-21 on a fresh 448x448 image: 0.84 s pinned vs 1.9 s spread."
+        ),
+    )
 
     # Backend (llama-server)
     backend_url: str = "http://127.0.0.1:8090"

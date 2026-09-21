@@ -67,6 +67,7 @@ class EvaluationService:
         t1 = time.perf_counter()
 
         warm = await self.backend.complete(prepared.prefix, images=prepared.images or None)
+        pinned = warm.id_slot if self.settings.pin_slot else None
         t2 = time.perf_counter()
 
         async def branch(b):
@@ -78,6 +79,7 @@ class EvaluationService:
                 images=prepared.images or None,
                 n_probs=n_probs,
                 grammar=b.grammar,
+                id_slot=pinned,
             )
 
         tasks = [asyncio.create_task(branch(b)) for b in prepared.branches]

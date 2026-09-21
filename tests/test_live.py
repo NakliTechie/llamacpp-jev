@@ -62,3 +62,29 @@ def test_sixty_four_way_is_well_formed(client):
     probs = answers["q"]["probabilities"]
     assert len(probs) == 64 and abs(sum(probs.values()) - 1) < 1e-6
     assert int(headers["x-llamajev-truncated-labels"]) <= 64
+
+
+def test_vision_shapes(client):
+    """Batch C shape: one 448x448 image, four typed questions. Skips on a text-only backend."""
+    import base64
+    from pathlib import Path
+
+    if not client.get("/health").json().get("vision"):
+        pytest.skip("backend has no vision modality (start llama-server with --mmproj)")
+    image = Path(__file__).parent / "assets" / "shapes-448.png"
+    b64 = base64.b64encode(image.read_bytes()).decode()
+    state = [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+        {"type": "text", "text": "Look at the image carefully."},
+    ]}]
+    answers, headers = ask(client, state, {
+        "red_shape": {"type": "choice", "instructions": "What shape is the red object?", "criteria": {"circle": None, "square": None, "triangle": None, "none": "There is no red object"}},
+        "count": {"type": "choice", "instructions": "How many distinct shapes are in the image?", "criteria": {"1": None, "2": None, "3": None, "4": None, "5": None}},
+        "blue_square": {"type": "noul", "instructions": "Is there a blue square in the image?"},
+        "circle_quadrant": {"type": "choice", "instructions": "In which quadrant of the image is the circle?", "criteria": {"top_left": None, "top_right": None, "bottom_left": None, "bottom_right": None}},
+    })
+    assert answers["red_shape"]["choice"] == "circle"
+    assert answers["count"]["choice"] == "3"
+    assert answers["blue_square"]["noul"] > 0.5
+    assert answers["circle_quadrant"]["choice"] == "top_left"
+    assert int(headers["x-llamajev-prefix-tokens"]) > 200  # image tokens are in the prefix
