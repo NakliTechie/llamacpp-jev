@@ -25,8 +25,8 @@ The idea for this project came from a tweet ([@kis](https://x.com/kis/status/210
 JEV-like without modifications", demoed as Qwen3.5-2B answering 4 questions about a 448×448
 image in 800 ms. No repository was linked or found. **This independent build reproduces the shape
 and the number**: ≈ 0.5 s to encode the image and prefill 245 prefix tokens, ≈ 0.35 s for four
-one-token branches. Caveats: the tweet's hardware is unknown; accuracy here is on synthetic
-geometric images with unambiguous answers, not natural photos; and both Qwen3.5-0.8B and 2B fail
+one-token branches. Caveats: the tweet's hardware is unknown; accuracy is measured on synthetic
+geometric images (32/32) plus a 6-photo hand-labelled spot check (22/22), not a benchmark; and both Qwen3.5-0.8B and 2B fail
 64-way choices (they collapse onto one label once two-letter labels appear — 4/10/26-way are
 correct at every tested position).
 

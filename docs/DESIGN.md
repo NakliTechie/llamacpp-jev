@@ -219,16 +219,23 @@ reproduced on consumer Apple silicon with an unmodified `llama-server`. The 946 
 the 836 ms row only by `--cache-ram`; the 110 ms gap is within what a back-to-back thermal/GPU-clock
 swing produces here and was not re-measured.
 
-**The hang.** With `--cache-ram 4096`, 4 slots and pinning, the first repeated-image request after
-the fresh-image sweep timed out at 120 s, twice out of twice. `llama-server` log: the warm-up hit
-the cached prefix (`f_sim_best = 1.000`, 4 tokens processed), the first pinned branch launched
-(`task 224211 | processing task`), the other three were deferred (`selected slot by id (2)` ×3),
-and nothing further happened until the wrapper cancelled; the next task then ran normally. The
-same sequence — warm-up, 4 concurrent pinned branches, 3 rounds on the same image — did **not**
-hang on a freshly started server (`repro_hang2.py`), so the trigger involves the prior slot
-population (other slots holding text and other-image states that `--cache-idle-slots` saves on a
-new task). Unresolved; `--cache-ram 0` is the default until it is understood. Tracked in
-`plan/pending.md`.
+**The stall.** With `--cache-ram 4096`, 4 slots and pinning, a repeated-image request after the
+fresh-image sweep stalls inside `llama-server` for > 60 s — 4 of 4 times through the wrapper and
+1 of 1 with a standalone script that talks to `llama-server` directly. A stack sample shows the
+main loop inside `create_checkpoint → llama_context::state_seq_get_data → ~llama_io_write_host`,
+i.e. serialising the slot state one `ggml_backend_tensor_get` at a time; it is a pathological
+slow path, not a deadlock. Full report, sample and reproduction: `docs/llama-server-checkpoint-stall.md`,
+`docs/evidence/`, `scripts/repro_checkpoint_stall.py`. `--cache-ram 0` is the default until it
+is fixed or understood upstream.
+
+**Natural photos (2026-09-21).** 6 Wikimedia Commons photos (wild dog in grass, 1900s
+black-and-white kitchen interior with a family, Formula 3 car, cat on a sofa, beach at dusk,
+bicycle against railings), each downscaled to 448 px wide, 4 questions each (main subject
+5-way, indoor/outdoor, person visible, black-and-white), truth hand-labelled by viewing the
+images; 2 answers left unscored as ambiguous (a helmeted driver; distant beach figures).
+Result: **22 of 22** scored answers correct on Qwen3.5-2B-Q8_0 (`photo_check.py`, session-local;
+photos not committed — CC BY-SA, see `plan/pending.md`). Latencies were 1–5 s because a second
+server was benchmarking on the same GPU at the time, so they are not reported.
 
 **64-way choices.** Both Qwen3.5-0.8B and 2B answer 4/10/26-way questions correctly at every
 tested position, including position 20 (`U`), but on 64-way questions both choose `Q` (option 16)
