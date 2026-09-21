@@ -148,14 +148,23 @@ the batch that starts the last user message (`server-context.cpp:3596-3636`) and
 the new prompt diverges (`:3350-3380`). Verified §5: after warm-up, each of 4 branches processed
 only its own suffix (`prompt_n` 32–38 with 50 prefix tokens cached).
 
-Server flags this project runs `llama-server` with: `-np <slots> --cache-ram <MiB>
+Server flags this project runs `llama-server` with: `-np <slots> --cache-ram 0
 --ctx-checkpoints 32 --checkpoint-min-step 0 --reasoning-budget 0 -ngl 99`. `--checkpoint-min-step 0`
 matters: the default spacing is 8192 tokens, which would suppress checkpoints on short prompts
 except the last-user-message one (which is the one we need — kept explicit anyway).
 
-Multi-slot: with `--cache-ram`, an idle slot's state is saved to the prompt cache and can be loaded
-into another slot, so branches can run concurrently across slots. Whether that beats sequential on
-one Apple GPU is measured in Batch B, not assumed.
+**Slot pinning (default on, `LLAMAJEV_PIN_SLOT`).** The warm-up response carries `id_slot`; every
+branch is sent with that `id_slot`, so `llama-server` serialises the branches on the one slot that
+already holds the prefix state and restores its checkpoint between them. Without pinning the
+branches spread across slots and each new slot re-processes the whole prefix — with an image in it,
+that is 3 extra image encodes per request (measured §5: 1.9 s vs 0.84 s). The cost is that a
+repeated identical state, which could otherwise fan out across warm slots, runs sequentially
+(0.42 s vs 0.26 s). Fresh state is the realistic Jev workload, so pinning wins the default.
+
+**RAM prompt cache off (`--cache-ram 0`).** With pinning it contributes nothing to this flow, and
+with it on (4096 MiB) two of two repeated-image requests through the wrapper hung inside
+`llama-server` (§5). Multi-slot still matters for *concurrent* evaluations: each warm-up lands on
+an idle slot and its branches stay there.
 
 ## §4 Vision path (Batch C — the claim-verification step)
 
@@ -164,10 +173,9 @@ one Apple GPU is measured in Batch B, not assumed.
   parser replaces each with the server's media marker (`/props.media_marker`; per-process random
   unless `LLAMA_MEDIA_MARKER` is set). The wrapper collects the base64 payloads in document order
   and sends the branch as `{"prompt": {"prompt_string": text, "multimodal_data": [b64, …]}}`.
-- Caveat to measure: `llama-server` does **not** create checkpoints in a batch containing media
-  chunks (`do_checkpoint && !has_mtmd`). For a hybrid model with an image in the prefix this may
-  force full re-processing per question. Batch C reports what happens; nothing here assumes the
-  @kis tweet's 800 ms figure is reachable.
+- Measured (§5): the checkpoint taken before the last user message sits *after* the image chunk,
+  so branches restore it and process only their suffix (`cache_n` = full prefix, `prompt_n` ≈ 35
+  per branch). The image is encoded once per request, in the warm-up call.
 
 ## §5 Verification record (2026-09-21, Qwen3.5-0.8B-Q8_0, Metal, M4 Pro)
 
@@ -185,3 +193,45 @@ Probe script: `scratchpad/probe.py` (session-local; to be promoted to `tests/tes
 | `post_sampling_probs` + grammar, temp 0 | `[('A', 1.0)]` — no distribution |
 
 The 256 ms outlier on branch 3 is unexplained (same `prompt_n` as neighbours); to be re-measured in Batch B with more repetitions.
+
+### Batch B/C record (2026-09-21, Qwen3.5-2B-Q8_0 + `mmproj-F16` from `unsloth/Qwen3.5-2B-GGUF`, Metal, M4 Pro 24 GB, `-np 4 -c 8192`)
+
+`scripts/bench.py` (same request repeated; run 0 cold) and `scripts/fresh_bench.py` (images from `scripts/make_shapes.py`)
+(8 never-seen synthetic 448×448 images, 3 shapes each, ground truth known; 4 typed questions:
+red shape / count / blue square? / circle quadrant).
+
+| Scenario | Config | Wall (median) | prefill | branches | Correct |
+|---|---|---|---|---|---|
+| 4 text questions, repeated | unpinned, cache-ram 4096 | 222 ms | 32 | 186 | — |
+| 4 text questions, repeated | pinned, cache-ram 0 | 381 ms | 30 | 345 | — |
+| **Fresh 448×448 image, 4 questions** | 1 slot | **837 ms** (819–887) | 494 | 345 | 32/32 |
+| Fresh image, 4 questions | 4 slots, unpinned | 1917 ms (1886–1935) | 449 | 1463 | 32/32 |
+| **Fresh image, 4 questions** | 4 slots, **pinned** | **836 ms** (825–898) | 496 | 336 | 32/32 |
+| Fresh image, 4 questions | 4 slots, pinned, cache-ram 0 | 946 ms (826–1048) | 604 | 373 | 32/32 |
+| Same image repeated | 4 slots, unpinned | 259 ms | 34 | 204 | 4/4 |
+| Same image repeated | 4 slots, pinned, cache-ram 0 | 493 ms | 36 | 451 | 4/4 |
+| Same image repeated | 4 slots, pinned, cache-ram 4096 | **504 timeout** (2 of 2) | — | — | — |
+
+Reading: a fresh image costs ≈ 0.5 s of prefill (245 prefix tokens incl. 196 image tokens at
+≈ 500 tok/s) plus ≈ 0.35 s for four sequential one-token branches (≈ 35 suffix tokens each plus
+a checkpoint restore). That is the @kis tweet's "4 questions about a 448×448 image in 800 ms",
+reproduced on consumer Apple silicon with an unmodified `llama-server`. The 946 ms row differs from
+the 836 ms row only by `--cache-ram`; the 110 ms gap is within what a back-to-back thermal/GPU-clock
+swing produces here and was not re-measured.
+
+**The hang.** With `--cache-ram 4096`, 4 slots and pinning, the first repeated-image request after
+the fresh-image sweep timed out at 120 s, twice out of twice. `llama-server` log: the warm-up hit
+the cached prefix (`f_sim_best = 1.000`, 4 tokens processed), the first pinned branch launched
+(`task 224211 | processing task`), the other three were deferred (`selected slot by id (2)` ×3),
+and nothing further happened until the wrapper cancelled; the next task then ran normally. The
+same sequence — warm-up, 4 concurrent pinned branches, 3 rounds on the same image — did **not**
+hang on a freshly started server (`repro_hang2.py`), so the trigger involves the prior slot
+population (other slots holding text and other-image states that `--cache-idle-slots` saves on a
+new task). Unresolved; `--cache-ram 0` is the default until it is understood. Tracked in
+`plan/pending.md`.
+
+**64-way choices.** Both Qwen3.5-0.8B and 2B answer 4/10/26-way questions correctly at every
+tested position, including position 20 (`U`), but on 64-way questions both choose `Q` (option 16)
+regardless of where the correct option is. The wrapper's mapping is not at fault (26-way at
+position 20 works); the models do not follow two-letter labels. The contract still accepts 64
+options; `tests/test_live.py` checks 64-way structurally and 26-way for correctness.

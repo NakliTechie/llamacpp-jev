@@ -44,4 +44,12 @@ class Settings(BaseSettings):
     n_slots: int = Field(default=4, ge=1)
     n_ctx: int = Field(default=8192, ge=512)
     n_gpu_layers: int = Field(default=99, ge=0)
-    cache_ram_mib: int = Field(default=4096, ge=-1)
+    cache_ram_mib: int = Field(
+        default=0,
+        ge=-1,
+        description=(
+            "llama-server --cache-ram. Off by default: with slot pinning the RAM prompt cache adds "
+            "nothing, and with it on (4096) two of two repeated-image requests hung inside "
+            "llama-server on 2026-09-21 (task launched, never finished, freed only by cancel)."
+        ),
+    )

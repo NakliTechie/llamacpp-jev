@@ -1,35 +1,107 @@
 # llamacpp-jev
 
-> A thin wrapper server exposing TypeSafe Jev's `/v1/systemone` API in front of an **unmodified** `llama-server`, using primitives llama.cpp already has. No core patch — unlike its sibling project [sglang-jev-diffusion](https://github.com/NakliTechie/sglang-jev-diffusion), which needs one.
+> A thin wrapper server exposing TypeSafe Jev's `POST /v1/systemone` API in front of an
+> **unmodified** `llama-server`. No llama.cpp patch: it uses the primitives the server already
+> has — a rendered chat template (`/apply-template`), prompt caching with context checkpoints,
+> per-token logprobs (`n_probs`) and GBNF-constrained sampling — the same way
+> [ekzhang/openjev-sglang](https://github.com/ekzhang/openjev-sglang) does on SGLang.
 
-## Why this is a different shape of project than its sibling
+Text and **vision**: chat messages may carry `image_url` data-URI parts when `llama-server` runs
+with a multimodal projector (`--mmproj`).
 
-[sgl-project/sglang](https://github.com/sgl-project/sglang) needed a core patch for Jev-like serving on **diffusion** models specifically, because a diffusion LM's fixed-width iterative canvas has no equivalent in the engine's existing API. `llama.cpp` doesn't have that problem, for two reasons:
+## What was verified (2026-09-21, M4 Pro 24 GB, Metal)
 
-1. **llama.cpp has no diffusion-language-model support at all.** There's no DiffusionGemma-class target to serve, so there's no canvas-seeding/pinning gap to fill in the first place.
-2. **For autoregressive models, llama.cpp's own server already exposes the primitives needed** — per-token logprobs (`n_probs`) and grammar-constrained/GBNF decoding — the same class of primitive [ekzhang/openjev-sglang](https://github.com/ekzhang/openjev-sglang) used to get Jev-compatible serving on SGLang's autoregressive path with **zero core engine changes**.
+Model: `unsloth/Qwen3.5-2B-GGUF` `Qwen3.5-2B-Q8_0.gguf` + `mmproj-F16.gguf`. llama.cpp master
+`3d82ef62` (b11063). Full record in [docs/DESIGN.md §5](docs/DESIGN.md).
 
-So this project should need no llama.cpp source changes. It's an application-layer server, structured the same way as openjev-sglang: render the chat template once, split a common prefix, issue N+1 single-token calls (one cache-warming call plus one per typed question), read exact logprobs for the candidate answer tokens, renormalize with softmax.
+| Request | Wall (median) | Correct |
+|---|---|---|
+| 4 typed questions about a **never-seen 448×448 image** (8 images) | **836 ms** (825–898) | 32/32 |
+| Same image repeated | 493 ms | 4/4 |
+| 4 typed text questions, repeated | 381 ms | — |
 
-## Where the idea came from — and what it doesn't verify yet
+The idea for this project came from a tweet ([@kis](https://x.com/kis/status/2101426969971916863),
+2026-09-20) claiming that a Jev-compatible server in front of llama.cpp lets "any model behave
+JEV-like without modifications", demoed as Qwen3.5-2B answering 4 questions about a 448×448
+image in 800 ms. No repository was linked or found. **This independent build reproduces the shape
+and the number**: ≈ 0.5 s to encode the image and prefill 245 prefix tokens, ≈ 0.35 s for four
+one-token branches. Caveats: the tweet's hardware is unknown; accuracy here is on synthetic
+geometric images with unambiguous answers, not natural photos; and both Qwen3.5-0.8B and 2B fail
+64-way choices (they collapse onto one label once two-letter labels appear — 4/10/26-way are
+correct at every tested position).
 
-A Japanese-language tweet ([@kis](https://x.com/kis/status/2101426969971916863), 2026-09-20) claimed: "if you integrate a JEV-compatible server into llama.cpp, any model can behave JEV-like without modifications," demoed with Qwen3.5-2B answering 4 questions about a 448×448 image in 800ms. **No repo was linked in that tweet**, and none was found searching around it. This project exists partly to build the thing described and partly to **independently check whether the claim is accurate** — including the vision angle, which is a step beyond openjev-sglang's text-only design and needs llama.cpp's multimodal (LLaVA-style) support specifically.
+## Run
 
-## Design
+```bash
+# 1. llama.cpp with Metal (any recent master; verified at 3d82ef62)
+cmake -B build-metal -DGGML_METAL=ON -DLLAMA_CURL=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-metal --target llama-server -j
 
-Same request contract as [sglang-jev-diffusion](https://github.com/NakliTechie/sglang-jev-diffusion) and TypeSafe's own Jev API, so a client doesn't need to know which engine is behind it:
+# 2. weights
+hf download unsloth/Qwen3.5-2B-GGUF Qwen3.5-2B-Q8_0.gguf mmproj-F16.gguf
 
-- `POST /v1/systemone` — `state` (text, JSON, or chat messages) + `questions` (typed `choice` / `score` / `noul`) in, typed answers + calibrated-looking probabilities out.
-- Backed by an ordinary `llama-server` process, driven via its existing OpenAI-compatible `/v1/chat/completions` or `/completion` endpoint with `n_probs` (or `logprobs`) and a constrained single-token response.
+# 3. the wrapper (launches llama-server itself; --mmproj is optional for text-only)
+uv sync
+uv run llamajev serve --model /path/Qwen3.5-2B-Q8_0.gguf --mmproj /path/mmproj-F16.gguf \
+  --llama-server /path/build-metal/bin/llama-server --slots 4 --port 8000
+```
 
-## Status
+Or attach to a `llama-server` you already run: `uv run llamajev serve --connect http://127.0.0.1:8080`.
+It must have been started with `--ctx-checkpoints 32 --checkpoint-min-step 0` (and `--mmproj` for images).
 
-Scaffolded. No code yet — see `plan/workplan.md`.
+```bash
+curl http://127.0.0.1:8000/v1/systemone -H 'Content-Type: application/json' -d '{
+  "model": "jev-latest",
+  "state": [{"role": "user", "content": "I was charged twice. Please refund the duplicate."}],
+  "questions": {
+    "refund":     {"type": "noul",   "instructions": "Does the user request a refund?"},
+    "department": {"type": "choice", "instructions": "Which department should handle this?",
+                   "criteria": {"billing": "Payments and refunds", "technical": "Software bugs"}},
+    "urgency":    {"type": "score",  "instructions": "How urgent is the request?",
+                   "criteria": ["Routine", "Urgent", "Emergency"]}
+  }}'
+```
+
+For an image, make `state` a chat message whose content has an
+`{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}` part.
+`uv run llamajev smoke` sends a three-question request; `uv run python scripts/bench.py [--image f.png]`
+prints per-phase timings from the `Server-Timing` header.
+
+Routes: `POST /v1/systemone`, `GET /v1/models`, `GET /v1/limits`, `GET /health`, `GET /health/live`,
+`GET /docs`. Errors are `{"error": {"message", "code"}}` with a closed set of codes (see
+[docs/DESIGN.md §0](docs/DESIGN.md)).
+
+## How a request runs
+
+1. `state` plus one extra user turn ("evaluate using the question below … answer with only its
+   label" + a marker) is rendered **once** through the GGUF's own chat template via
+   `/apply-template` with thinking disabled, then split at the marker into a prefix and an ending.
+2. One `/completion` call on the prefix with `n_predict: 1` warms the slot (image encoded here).
+3. One `/completion` call per question — `prefix + "Question: … Options: A: … B: …" + ending +
+   "Answer:\n"` — with `n_predict: 1`, `temperature: 0`, a GBNF grammar over the labels, and
+   `n_probs`. All branches are pinned to the warm-up's slot (`id_slot`), so `llama-server` restores
+   that slot's checkpoint and processes only the suffix.
+4. The candidate labels' logprobs are read from the pre-sampling `top_logprobs` (exact full-vocab
+   log-softmax, unaffected by the grammar) and renormalised: Noul → P(yes); Choice → argmax + full
+   distribution; Score → Σ level × p. `confidence = 1 − H/log n`.
+
+Labels are `A`–`Z` then verified single-token pairs, checked against the live tokenizer at startup.
+`usage.input_tokens` is the backend's summed prompt counts including cached tokens.
+
+## Tests
+
+```bash
+uv run pytest                                       # offline: fake backend
+LLAMAJEV_LIVE_URL=http://127.0.0.1:8000 uv run pytest tests/test_live.py -v   # against a running server
+```
+
+## Layout
+
+`src/llamajev/`: `config` · `models` (wire contract) · `prompts` (compiler) · `scoring` ·
+`backend` (llama-server HTTP) · `service` (N+1 orchestration) · `api` · `runtime` · `cli`.
+Design and measurements: `docs/DESIGN.md`. Sibling project with the same contract for diffusion
+models on SGLang: [sglang-jev-diffusion](https://github.com/NakliTechie/sglang-jev-diffusion).
 
 ## License
 
-MIT (matching `ekzhang/openjev-sglang`, which this project's structure closely follows).
-
-## Context
-
-Scaffolded alongside `sglang-jev-diffusion` from the same same-day research pass — see `plan/history.md` for the full source trail from the knowledge vault (`~/Code/knowledge`).
+MIT.
