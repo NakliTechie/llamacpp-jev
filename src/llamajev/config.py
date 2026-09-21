@@ -17,10 +17,7 @@ class Settings(BaseSettings):
     )
     max_body_bytes: int = Field(default=2 * 1024 * 1024, gt=0)
     max_concurrent_requests: int = Field(default=16, gt=0)
-    max_concurrent_branches: int | None = Field(
-        default=None, description="Concurrent backend calls; defaults to the backend's slot count."
-    )
-    request_timeout: float = Field(default=120, gt=0)
+    request_timeout: float = Field(default=120, gt=0, description="Deadline for one whole evaluation (seconds).")
     startup_timeout: float = Field(default=600, gt=0)
     temperature: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     top_n: int = Field(default=256, ge=2, description="n_probs requested per branch (readout depth).")

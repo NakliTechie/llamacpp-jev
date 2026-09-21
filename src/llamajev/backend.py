@@ -1,6 +1,5 @@
 """HTTP primitives against an unmodified llama-server: /props, /apply-template, /tokenize, /completion."""
 
-import asyncio
 import math
 from dataclasses import dataclass, field
 from typing import Any
@@ -10,7 +9,7 @@ import orjson
 
 from .config import MAX_ANSWERS
 from .models import ErrorCode
-from .prompts import label_candidates
+from .prompts import READOUT_PREFIX, label_candidates
 
 
 class BackendError(Exception):
@@ -34,9 +33,9 @@ class Generation:
     sampled: str
     logprobs: dict[int, float] = field(default_factory=dict)  # token id -> log p (full-vocab softmax)
     prompt_tokens: int = 0  # tokens processed this call
-    cached_tokens: int = 0  # tokens reused from the slot / prompt cache
+    cached_tokens: int = 0  # tokens reused from the slot cache
     prompt_ms: float = 0.0
-    id_slot: int | None = None  # slot that served the call; pin branches to it to reuse its state
+    id_slot: int | None = None
 
     @property
     def total_prompt_tokens(self) -> int:
@@ -44,9 +43,8 @@ class Generation:
 
 
 class LlamaClient:
-    def __init__(self, client: httpx.AsyncClient, max_concurrent_branches: int):
+    def __init__(self, client: httpx.AsyncClient):
         self.client = client
-        self.slots = asyncio.Semaphore(max_concurrent_branches)
 
     async def health(self) -> bool:
         try:
@@ -56,42 +54,51 @@ class LlamaClient:
             return False
 
     async def props(self) -> Props:
-        data = (await self._get("/props")).json()
-        settings = data.get("default_generation_settings", {})
-        modalities = data.get("modalities") or {}
-        return Props(
-            model_path=data.get("model_path", ""),
-            n_ctx=int(settings.get("n_ctx", 0)),
-            n_slots=int(data.get("total_slots", 1)),
-            vision=bool(modalities.get("vision", False)),
-            media_marker=data.get("media_marker", "<__media__>"),
-        )
+        data = json_object(await self._get("/props"), "/props")
+        settings = data.get("default_generation_settings")
+        settings = settings if isinstance(settings, dict) else {}
+        modalities = data.get("modalities")
+        modalities = modalities if isinstance(modalities, dict) else {}
+        try:
+            return Props(
+                model_path=str(data.get("model_path", "")),
+                n_ctx=int(settings.get("n_ctx", 0)),
+                n_slots=int(data.get("total_slots", 1)),
+                vision=bool(modalities.get("vision", False)),
+                media_marker=str(data.get("media_marker", "<__media__>")),
+            )
+        except (TypeError, ValueError) as exc:
+            raise BackendError(f"Invalid /props response: {exc}") from exc
 
     async def apply_template(self, messages: list[dict[str, Any]]) -> str:
         body = {"messages": messages, "chat_template_kwargs": {"enable_thinking": False}}
-        response = await self._post("/apply-template", body)
-        try:
-            return response.json()["prompt"]
-        except (KeyError, ValueError) as exc:
-            raise BackendError(f"Invalid /apply-template response: {exc}") from exc
+        data = json_object(await self._post("/apply-template", body), "/apply-template")
+        prompt = data.get("prompt")
+        if not isinstance(prompt, str):
+            raise BackendError("Invalid /apply-template response: prompt is not a string")
+        return prompt
 
     async def tokenize(self, text: str) -> list[tuple[int, str]]:
         body = {"content": text, "add_special": False, "with_pieces": True}
-        response = await self._post("/tokenize", body)
+        data = json_object(await self._post("/tokenize", body), "/tokenize")
         try:
-            return [(t["id"], t["piece"]) for t in response.json()["tokens"]]
+            return [(int(t["id"]), t["piece"]) for t in data["tokens"]]
         except (KeyError, TypeError, ValueError) as exc:
             raise BackendError(f"Invalid /tokenize response: {exc}") from exc
 
     async def verify_labels(self) -> list[tuple[str, int]]:
-        """Single-token answer labels, checked against the live model's tokenizer."""
+        """Single-token answer labels, checked alone and after the readout prefix ("Answer:\\n")."""
         found: list[tuple[str, int]] = []
         seen: set[int] = set()
         for label in label_candidates():
-            tokens = await self.tokenize(label)
-            if len(tokens) == 1 and tokens[0][1] == label and tokens[0][0] not in seen:
-                found.append((label, tokens[0][0]))
-                seen.add(tokens[0][0])
+            alone = await self.tokenize(label)
+            if len(alone) != 1 or alone[0][1] != label or alone[0][0] in seen:
+                continue
+            in_context = await self.tokenize(READOUT_PREFIX + label)
+            if not in_context or in_context[-1][0] != alone[0][0]:
+                continue
+            found.append((label, alone[0][0]))
+            seen.add(alone[0][0])
             if len(found) == MAX_ANSWERS:
                 break
         return found
@@ -117,10 +124,9 @@ class LlamaClient:
             body["grammar"] = grammar
         if id_slot is not None:
             body["id_slot"] = id_slot
-        async with self.slots:
-            response = await self._post("/completion", body)
+        data = json_object(await self._post("/completion", body), "/completion")
         try:
-            return parse_generation(response.json(), n_probs > 0)
+            return parse_generation(data, n_probs > 0)
         except (ValueError, KeyError, TypeError, IndexError) as exc:
             raise BackendError(f"Invalid /completion response: {exc}") from exc
 
@@ -152,11 +158,21 @@ def unreachable(client: httpx.AsyncClient) -> str:
     )
 
 
+def json_object(response: httpx.Response, path: str) -> dict:
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise BackendError(f"Invalid {path} response: not JSON") from exc
+    if not isinstance(data, dict):
+        raise BackendError(f"Invalid {path} response: expected an object")
+    return data
+
+
 def check(response: httpx.Response) -> httpx.Response:
     if response.is_success:
         return response
     try:
-        message = response.json()["error"]["message"]
+        message = str(response.json()["error"]["message"])
     except (ValueError, KeyError, TypeError):
         message = response.text[:200]
     status = response.status_code
@@ -170,7 +186,8 @@ def check(response: httpx.Response) -> httpx.Response:
 
 
 def parse_generation(data: dict, want_probs: bool) -> Generation:
-    timings = data.get("timings") or {}
+    timings = data.get("timings")
+    timings = timings if isinstance(timings, dict) else {}
     logprobs: dict[int, float] = {}
     if want_probs:
         positions = data["completion_probabilities"]
@@ -183,11 +200,12 @@ def parse_generation(data: dict, want_probs: bool) -> Generation:
             logprobs[int(entry["id"])] = value
         if not logprobs:
             raise ValueError("empty top_logprobs")
+    id_slot = data.get("id_slot")
     return Generation(
         sampled=str(data.get("content", "")),
         logprobs=logprobs,
         prompt_tokens=int(timings.get("prompt_n", 0)),
         cached_tokens=int(timings.get("cache_n", 0)),
         prompt_ms=float(timings.get("prompt_ms", 0.0)),
-        id_slot=int(data["id_slot"]) if data.get("id_slot") is not None else None,
+        id_slot=int(id_slot) if id_slot is not None else None,
     )

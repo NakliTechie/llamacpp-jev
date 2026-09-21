@@ -1,3 +1,4 @@
+import asyncio
 import math
 
 import httpx
@@ -24,6 +25,8 @@ class FakeBackend:
         self.vision = vision
         self.healthy = True
         self.readout_depth: int | None = None  # cap on returned entries, to simulate truncation
+        self.full_at: int | None = None  # n_probs at or above which the cap no longer applies
+        self.delay = 0.0
 
     async def health(self):
         return self.healthy
@@ -42,11 +45,15 @@ class FakeBackend:
 
     async def complete(self, prompt, *, images=None, n_probs=0, grammar=None, id_slot=None):
         self.calls.append({"prompt": prompt, "images": images, "n_probs": n_probs, "grammar": grammar, "id_slot": id_slot})
+        if self.delay:
+            await asyncio.sleep(self.delay)
         if n_probs == 0:
-            return Generation(sampled="Question", prompt_tokens=50, cached_tokens=0, id_slot=2)
+            return Generation(sampled="Question", prompt_tokens=50, cached_tokens=0, id_slot=id_slot)
         labels = fake_labels()
         # label i gets logprob -i: A most likely, then B, C ...
-        depth = min(n_probs, self.readout_depth or n_probs)
+        depth = n_probs
+        if self.readout_depth is not None and (self.full_at is None or n_probs < self.full_at):
+            depth = min(n_probs, self.readout_depth)
         logprobs = {token_id: -float(i) for i, (_, token_id) in enumerate(labels[:depth])}
         return Generation(sampled="A", logprobs=logprobs, prompt_tokens=30, cached_tokens=50, id_slot=id_slot)
 

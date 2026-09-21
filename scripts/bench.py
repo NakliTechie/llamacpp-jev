@@ -10,6 +10,7 @@ import base64
 import json
 import mimetypes
 import statistics
+import sys
 import time
 
 import httpx
@@ -75,7 +76,7 @@ def main():
             wall = (time.perf_counter() - t0) * 1000
             if r.status_code != 200:
                 print("ERROR", r.status_code, r.text)
-                return
+                sys.exit(1)
             t = parse_timing(r.headers["server-timing"])
             rows.append((wall, t))
             last = r

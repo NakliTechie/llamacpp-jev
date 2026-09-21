@@ -14,8 +14,8 @@ class StrictModel(BaseModel):
 
 
 class NoulCriteria(StrictModel):
-    yes: str = Field(default="Yes", alias="true", description="Meaning of a positive answer.")
-    no: str = Field(default="No", alias="false", description="Meaning of a negative answer.")
+    yes: Content = Field(default="Yes", alias="true", description="Meaning of a positive answer.")
+    no: Content = Field(default="No", alias="false", description="Meaning of a negative answer.")
 
 
 class NoulQuestion(StrictModel):
@@ -29,12 +29,14 @@ class NoulQuestion(StrictModel):
 class ChoiceQuestion(StrictModel):
     type: Literal["choice"]
     instructions: Content = Field(description="Question or instructions for choosing one option.")
-    criteria: dict[str, str | None] = Field(
+    criteria: dict[str, Content | None] = Field(
         min_length=2,
         max_length=MAX_ANSWERS,
         description=(
-            "Map of 2-64 option keys to descriptions. The model sees only the description, "
-            "or the option key when its description is null. Returned answers use the keys."
+            "Map of 2-64 option keys to descriptions (string, object or array). The model sees "
+            "only the description, or the option key when its description is null. Returned "
+            "answers use the keys. TypeSafe allows 255 options; this server's single-token "
+            "labels cap it at 64."
         ),
     )
 
@@ -42,12 +44,12 @@ class ChoiceQuestion(StrictModel):
 class ScoreQuestion(StrictModel):
     type: Literal["score"]
     instructions: Content = Field(description="Question or instructions for applying the rubric.")
-    criteria: list[str] = Field(
+    criteria: list[Content] = Field(
         min_length=2,
         max_length=MAX_ANSWERS,
         description=(
-            "Ordered rubric, lowest to highest. Scores use zero-based indices: three "
-            "descriptions correspond to levels 0, 1, and 2."
+            "Ordered rubric, lowest to highest (strings, objects or arrays). Scores use "
+            "zero-based indices: three descriptions correspond to levels 0, 1, and 2."
         ),
     )
 
@@ -108,7 +110,7 @@ class ChoiceAnswer(StrictModel):
 class ScoreAnswer(StrictModel):
     type: Literal["score"] = "score"
     score: float = Field(ge=0, description="Expected zero-based level index.")
-    legend: dict[str, str] = Field(description="Stringified level index to rubric description.")
+    legend: dict[str, str] = Field(description="Stringified level index to rubric description (structured levels serialized as JSON).")
     probabilities: dict[str, float] = Field(description="Probability per level index; sums to 1.")
     confidence: float = Field(
         ge=0, le=1, description="1 minus normalized entropy. Not calibrated correctness."
@@ -137,6 +139,7 @@ ErrorCode = Literal[
     "backend_unreachable",
     "backend_error",
     "backend_timeout",
+    "readout_truncated",
     "overloaded",
     "client_disconnected",
 ]

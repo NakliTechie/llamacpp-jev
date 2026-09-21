@@ -91,10 +91,9 @@ def create_app(
                 timeout=httpx.Timeout(settings.request_timeout, connect=5),
                 limits=httpx.Limits(max_connections=128, max_keepalive_connections=128),
             ) as client:
-                probe = LlamaClient(client, 1)
-                await wait_ready(probe, process, settings.startup_timeout)
-                props = await probe.props()
-                backend = LlamaClient(client, settings.max_concurrent_branches or props.n_slots)
+                backend = LlamaClient(client)
+                await wait_ready(backend, process, settings.startup_timeout)
+                props = await backend.props()
                 compiler = PromptCompiler(await backend.verify_labels())
                 app.state.service = EvaluationService(settings, compiler, backend, props)
                 app.state.startup_seconds = round(time.monotonic() - started, 2)
@@ -155,7 +154,8 @@ def create_app(
                     "x-llamajev-model": service.served_model_name,
                     "x-llamajev-prefix-tokens": str(result.prefix_tokens),
                     "x-llamajev-cached-tokens": str(result.cached_tokens),
-                    "x-llamajev-truncated-labels": str(result.truncated_labels),
+                    "x-llamajev-readout-retries": str(result.readout_retries),
+                    **({"x-llamajev-slot": str(result.slot)} if result.slot is not None else {}),
                     "Server-Timing": (
                         f"prepare;dur={result.prepare_ms:.2f}, "
                         f"prefill;dur={result.prefill_ms:.2f}, "

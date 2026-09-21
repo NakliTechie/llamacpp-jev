@@ -52,12 +52,14 @@ main thread; full file `docs/evidence/checkpoint-stall-sample-2026-09-21.txt`):
   273      common_prompt_checkpoint::update_tgt (+176)       ← llama_state_seq_get_size path
 ```
 
-So it is not a deadlock: the main loop is inside `create_checkpoint()` serialising the slot's
-memory state, and almost all samples are in `~llama_io_write_host()`, which replays every
-`write_tensor()` as an individual `ggml_backend_tensor_get()` (`src/llama-context.cpp:2611-2616`,
-with a `// TODO: add backend support to batch tensor_get?` comment).
+The main loop is inside `create_checkpoint()` serialising the slot's memory state. At the leaf,
+959 of the 1255 samples are in `_platform_memmove` under `~llama_io_write_host()` (which replays
+every `write_tensor()` as a `ggml_backend_tensor_get()`, a `memcpy` from the shared Metal buffer —
+`src/llama-context.cpp:2611-2616`) and 273 in `__bzero` under `update_tgt` (zeroing the
+checkpoint buffer). So the time goes to copying and zeroing checkpoint memory. Whether the loop
+would eventually finish was not established: the 180 s client timeout fired first every time.
 
-## 4. Hypothesis (not verified)
+## 4. Hypotheses (neither verified)
 
 `llama_kv_cache::state_write_data` emits one `write_tensor` per contiguous cell range per layer per
 K/V (`src/llama-kv-cache.cpp:2263-2328`), and `llama_memory_recurrent::state_write` one per range
@@ -71,8 +73,17 @@ with `--cache-ram 0` (no cross-slot state traffic, cells stay contiguous). Media
 contribute (the image's 196 cells are written like any other), but the same prompt shape without
 the RAM cache is fine, so they are not sufficient on their own.
 
-What would confirm it: log `cr.data.size()` (number of ranges) and `winfos.size()` at checkpoint
-time, or run with `LLAMA_STATE_SEQ_FLAGS_ON_DEVICE` and see whether the stall goes away.
+**Alternative: oversized or repeated checkpoints.** The `memmove`/`bzero` profile is equally
+consistent with each checkpoint simply being very large (for example the whole cache rather than
+one sequence's cells) or being created far more often than expected, so that a few copies of
+gigabytes dominate. Fragmentation would show as many small copies; this would show as few large
+ones. The sample cannot tell them apart.
+
+What would settle it: run with a verbosity that prints the server's own
+`created context checkpoint … size = … MiB` line (`-lv 3` did not), and log `cr.data.size()`
+(number of cell ranges) and `winfos.size()` (number of tensor copies) plus the byte total per
+checkpoint. Then repeat controlled cache-on/off runs from fresh servers so the two configurations
+differ only in `--cache-ram`.
 
 ## 5. Reproduce
 

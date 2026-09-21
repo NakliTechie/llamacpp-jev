@@ -14,26 +14,29 @@ with a multimodal projector (`--mmproj`).
 Model: `unsloth/Qwen3.5-2B-GGUF` `Qwen3.5-2B-Q8_0.gguf` + `mmproj-F16.gguf`. llama.cpp master
 `3d82ef62` (b11063). Full record in [docs/DESIGN.md §5](docs/DESIGN.md).
 
-| Request | Wall (median) | Correct |
+| Request (default config: 4 slots, slot pinning, `--cache-ram 0`) | Wall (median) | Correct |
 |---|---|---|
-| 4 typed questions about a **never-seen 448×448 image** (8 images) | **836 ms** (825–898) | 32/32 |
+| 4 typed questions about a **never-seen 448×448 image** (8 images) | **946 ms** (826–1048) | 32/32 |
 | Same image repeated | 493 ms | 4/4 |
 | 4 typed text questions, repeated | 381 ms | — |
+
+The same fresh-image run measured 836 ms (825–898) with `--cache-ram 4096`, the configuration
+that later stalled (below); the two runs were back-to-back and the gap was not re-measured.
 
 The idea for this project came from a tweet ([@kis](https://x.com/kis/status/2101426969971916863),
 2026-09-20) claiming that a Jev-compatible server in front of llama.cpp lets "any model behave
 JEV-like without modifications", demoed as Qwen3.5-2B answering 4 questions about a 448×448
 image in 800 ms. No repository was linked or found. **This independent build reproduces the shape
-and the number**: ≈ 0.5 s to encode the image and prefill 245 prefix tokens, ≈ 0.35 s for four
-one-token branches. Caveats: the tweet's hardware is unknown; accuracy is measured on synthetic
+of the claim and lands within 20% of the number**: ≈ 0.5–0.6 s to encode the image and prefill
+245 prefix tokens, ≈ 0.35 s for four one-token branches. Caveats: the tweet's hardware is unknown; accuracy is measured on synthetic
 geometric images (32/32) plus a 6-photo hand-labelled spot check (22/22), not a benchmark; and both Qwen3.5-0.8B and 2B fail
-64-way choices (they collapse onto one label once two-letter labels appear — 4/10/26-way are
-correct at every tested position).
+64-way choices (they collapse onto one label once two-letter labels appear; 4/10/26-way are
+correct at every tested position, and the cause is not established).
 
 ## Run
 
 ```bash
-# 1. llama.cpp with Metal (any recent master; verified at 3d82ef62)
+# 1. llama.cpp with Metal — verified only at master 3d82ef62 (b11063, 2026-09-20)
 cmake -B build-metal -DGGML_METAL=ON -DLLAMA_CURL=ON -DCMAKE_BUILD_TYPE=Release
 cmake --build build-metal --target llama-server -j
 
@@ -47,7 +50,10 @@ uv run llamajev serve --model /path/Qwen3.5-2B-Q8_0.gguf --mmproj /path/mmproj-F
 ```
 
 Or attach to a `llama-server` you already run: `uv run llamajev serve --connect http://127.0.0.1:8080`.
-It must have been started with `--ctx-checkpoints 32 --checkpoint-min-step 0` (and `--mmproj` for images).
+It must have been started with `--ctx-checkpoints 32 --checkpoint-min-step 0 --cache-ram 0` (and
+`--mmproj` for images). `--cache-ram 0` matters: llama-server's default is 8192 MiB and that
+configuration stalled for minutes on repeated image prompts here
+([docs/llama-server-checkpoint-stall.md](docs/llama-server-checkpoint-stall.md)).
 
 ```bash
 curl http://127.0.0.1:8000/v1/systemone -H 'Content-Type: application/json' -d '{
@@ -71,6 +77,20 @@ Routes: `POST /v1/systemone`, `GET /v1/models`, `GET /v1/limits`, `GET /health`,
 `GET /docs`. Errors are `{"error": {"message", "code"}}` with a closed set of codes (see
 [docs/DESIGN.md §0](docs/DESIGN.md)).
 
+## Compatibility with TypeSafe Jev and openjev-sglang
+
+| | TypeSafe Jev | openjev-sglang | llamajev |
+|---|---|---|---|
+| Question types | noul / choice / score | same | same |
+| Choice options | up to 255 | 2–64 | 2–64 (single-token labels) |
+| Score levels | ordered list | 2–64 | 2–64 |
+| Structured `instructions` / criteria (objects, arrays) | yes | instructions only | yes, serialized as JSON |
+| Null choice description → key is shown | yes | yes | yes |
+| Images in state | no | no | yes, `image_url` data URIs, needs `--mmproj` |
+| `confidence` | proprietary statistic | 1 − H/log n | 1 − H/log n |
+| `usage.input_tokens` | billing tokens | backend prompt counts incl. cache | backend prompt counts incl. cache |
+| Probabilities | calibrated (RLCD) | raw softmax over labels | raw softmax over labels — **not calibrated** |
+
 ## How a request runs
 
 1. `state` plus one extra user turn ("evaluate using the question below … answer with only its
@@ -79,10 +99,13 @@ Routes: `POST /v1/systemone`, `GET /v1/models`, `GET /v1/limits`, `GET /health`,
 2. One `/completion` call on the prefix with `n_predict: 1` warms the slot (image encoded here).
 3. One `/completion` call per question — `prefix + "Question: … Options: A: … B: …" + ending +
    "Answer:\n"` — with `n_predict: 1`, `temperature: 0`, a GBNF grammar over the labels, and
-   `n_probs`. All branches are pinned to the warm-up's slot (`id_slot`), so `llama-server` restores
-   that slot's checkpoint and processes only the suffix.
+   `n_probs`. Each evaluation leases one slot for its warm-up and all its branches (`id_slot`), so
+   `llama-server` restores that slot's checkpoint and processes only the suffix; concurrent
+   evaluations get different slots.
 4. The candidate labels' logprobs are read from the pre-sampling `top_logprobs` (exact full-vocab
-   log-softmax, unaffected by the grammar) and renormalised: Noul → P(yes); Choice → argmax + full
+   log-softmax, unaffected by the grammar). If a label is outside the readout, the branch is retried
+   at depth 4096 then 32768, and fails with `readout_truncated` rather than reporting a made-up 0.
+   Then renormalised: Noul → P(yes); Choice → argmax + full
    distribution; Score → Σ level × p. `confidence = 1 − H/log n`.
 
 Labels are `A`–`Z` then verified single-token pairs, checked against the live tokenizer at startup.

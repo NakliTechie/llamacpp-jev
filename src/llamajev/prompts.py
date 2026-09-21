@@ -22,6 +22,7 @@ PREAMBLE = (
     "Choose exactly one option and answer with only its label."
 )
 ROLES = {"system", "user", "assistant", "tool"}
+READOUT_PREFIX = "Answer:\n"
 
 
 class ContentError(ValueError):
@@ -29,7 +30,12 @@ class ContentError(ValueError):
 
 
 def serialize(value: Content) -> str:
-    return value if isinstance(value, str) else orjson.dumps(value).decode()
+    if isinstance(value, str):
+        return value
+    try:
+        return orjson.dumps(value).decode()
+    except (TypeError, ValueError, OverflowError) as exc:  # e.g. integers beyond 64 bits
+        raise ContentError(f"State or criteria cannot be serialized as JSON: {exc}") from exc
 
 
 def label_candidates():
@@ -55,7 +61,7 @@ def state_messages(state: Content, allow_images: bool) -> tuple[list[dict[str, A
         return [{"role": "user", "content": serialize(state)}], []
     images: list[str] = []
     for item in candidate:
-        if item["role"] not in ROLES:
+        if not isinstance(item["role"], str) or item["role"] not in ROLES:
             raise ContentError("Chat state has an unsupported message role")
         content = item.get("content")
         if isinstance(content, str) or content is None:
@@ -94,7 +100,7 @@ def options(question: Question) -> list[tuple[str, str | None]]:
 class Branch:
     question_id: str
     question: Question
-    prompt: str
+    suffix: str  # appended to the shared prefix at send time
     labels: list[str]
     label_ids: list[int]
     option_keys: list[str]
@@ -134,14 +140,14 @@ class PromptCompiler:
             labels = self.labels[: len(choices)]
             lines = [f"Question: {serialize(question.instructions)}", "", "Options:"]
             for (option, description), (label, _) in zip(choices, labels, strict=True):
-                text = (option if description is None else description).replace("\n", "\n   ")
+                text = (option if description is None else serialize(description)).replace("\n", "\n   ")
                 lines.append(f"{label}: {text}")
-            suffix = "\n".join(lines) + ending + "Answer:\n"
+            suffix = "\n".join(lines) + ending + READOUT_PREFIX
             branches.append(
                 Branch(
                     question_id=key,
                     question=question,
-                    prompt=prefix + suffix,
+                    suffix=suffix,
                     labels=[label for label, _ in labels],
                     label_ids=[token_id for _, token_id in labels],
                     option_keys=[option for option, _ in choices],

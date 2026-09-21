@@ -16,7 +16,7 @@ perception act, closed vocabularies, bounded output, and a backend it cannot cor
 | Principle | How this project answers it |
 |---|---|
 | One perception act | `GET /health` returns `{status, backend, model, n_slots, media_marker, startup_seconds}` — everything needed to decide whether a `/v1/systemone` call can succeed. |
-| Machine-decidable | Every error is `{"error": {"message", "code"}}` with `code` drawn from a closed set: `validation`, `body_too_large`, `unknown_model`, `too_many_tokens`, `backend_unreachable`, `backend_error`, `backend_timeout`, `overloaded`, `client_disconnected`. |
+| Machine-decidable | Every error is `{"error": {"message", "code"}}` with `code` drawn from a closed set: `validation`, `body_too_large`, `unknown_model`, `too_many_tokens`, `backend_unreachable`, `backend_error`, `backend_timeout`, `readout_truncated`, `overloaded`, `client_disconnected`. |
 | One verdict per next action | HTTP status maps 1:1 to the remedy: 422 fix the request · 413 shrink the body · 503 start/wait for `llama-server` · 502 inspect backend logs · 504 raise timeout or shrink prompt · 529 retry after `Retry-After`. |
 | Bounded output | A response grows with `len(questions) × len(criteria)` only. Never with model size, cache size, or history. |
 | Every failure names its remedy | `message` states what happened and the next command (e.g. "llama-server unreachable at http://127.0.0.1:8090 — start it with `llamajev serve --model …` or pass `--connect`"). |
@@ -75,7 +75,7 @@ answers. Field names below are load-bearing; do not rename.
 
 Headers on every 200: `x-typesafe-request-id`, `x-llamajev-model`, `x-llamajev-prefix-tokens`,
 `x-llamajev-cached-tokens` (sum of `tokens_cached` reported by the backend across branches),
-`x-llamajev-truncated-labels` (see §3.3), and `Server-Timing: prepare;dur=…, prefill;dur=…, branches;dur=…`.
+`x-llamajev-readout-retries` (see §3.3), `x-llamajev-slot`, and `Server-Timing: prepare;dur=…, prefill;dur=…, branches;dur=…`.
 
 Other routes: `GET /v1/models`, `GET /v1/limits`, `GET /health`, `GET /health/live`, `GET /docs`, `GET /openapi.json`.
 
@@ -134,9 +134,11 @@ into the server's prompt cache so other slots can load it).
 ### 3.3 Truncation
 
 `llama-server` has no "logprobs for these token ids" parameter; the readout is top-`TOP_N` only.
-A label outside the top-`TOP_N` has probability ≤ the `TOP_N`-th token's, which is assigned 0 and
-counted in `x-llamajev-truncated-labels`. Default `TOP_N = 256` (config `LLAMAJEV_TOP_N`); the
-cost is JSON size only (`llama-server` partial-sorts the full vocab either way).
+A branch whose labels are not all inside the readout is retried at depth 4096, then 32768; if
+labels are still missing the evaluation fails with `readout_truncated` (502) instead of returning
+a distribution with fabricated zeros. Default first depth is `max(LLAMAJEV_TOP_N=256, 16 × labels)`;
+retries are counted in `x-llamajev-readout-retries`. The cost is JSON size only (`llama-server`
+partial-sorts the full vocab either way).
 
 ### 3.4 Cache reuse (the performance claim)
 
@@ -153,9 +155,10 @@ Server flags this project runs `llama-server` with: `-np <slots> --cache-ram 0
 matters: the default spacing is 8192 tokens, which would suppress checkpoints on short prompts
 except the last-user-message one (which is the one we need — kept explicit anyway).
 
-**Slot pinning (default on, `LLAMAJEV_PIN_SLOT`).** The warm-up response carries `id_slot`; every
-branch is sent with that `id_slot`, so `llama-server` serialises the branches on the one slot that
-already holds the prefix state and restores its checkpoint between them. Without pinning the
+**Slot leasing (default on, `LLAMAJEV_PIN_SLOT`).** Each evaluation takes one slot id from a pool
+of `n_slots` for its whole life; the warm-up and every branch are sent with that `id_slot`, so
+`llama-server` serialises the branches on the one slot that already holds the prefix state and
+restores its checkpoint between them, and no other evaluation can evict that state meanwhile. Without pinning the
 branches spread across slots and each new slot re-processes the whole prefix — with an image in it,
 that is 3 extra image encodes per request (measured §5: 1.9 s vs 0.84 s). The cost is that a
 repeated identical state, which could otherwise fan out across warm slots, runs sequentially
@@ -223,8 +226,10 @@ swing produces here and was not re-measured.
 fresh-image sweep stalls inside `llama-server` for > 60 s — 4 of 4 times through the wrapper and
 1 of 1 with a standalone script that talks to `llama-server` directly. A stack sample shows the
 main loop inside `create_checkpoint → llama_context::state_seq_get_data → ~llama_io_write_host`,
-i.e. serialising the slot state one `ggml_backend_tensor_get` at a time; it is a pathological
-slow path, not a deadlock. Full report, sample and reproduction: `docs/llama-server-checkpoint-stall.md`,
+with the leaf samples in `memmove` and `bzero`, i.e. copying and zeroing checkpoint memory. Whether
+it ever finishes was not established (the client timeout fired first). Two hypotheses, neither
+verified: cell fragmentation causing thousands of small copies, or oversized/over-frequent
+checkpoints causing a few huge ones. Full report, sample and reproduction: `docs/llama-server-checkpoint-stall.md`,
 `docs/evidence/`, `scripts/repro_checkpoint_stall.py`. `--cache-ram 0` is the default until it
 is fixed or understood upstream.
 
@@ -239,6 +244,8 @@ server was benchmarking on the same GPU at the time, so they are not reported.
 
 **64-way choices.** Both Qwen3.5-0.8B and 2B answer 4/10/26-way questions correctly at every
 tested position, including position 20 (`U`), but on 64-way questions both choose `Q` (option 16)
-regardless of where the correct option is. The wrapper's mapping is not at fault (26-way at
-position 20 works); the models do not follow two-letter labels. The contract still accepts 64
+regardless of where the correct option is. The 26-way success only shows single-letter mapping is right; two-letter labels are exercised
+only by the failing case, so a mapping or tokenization-in-context fault for two-letter labels is
+not excluded (the startup check now verifies each label after `Answer:\n` as well as alone).
+Cause unresolved. The contract still accepts 64
 options; `tests/test_live.py` checks 64-way structurally and 26-way for correctness.

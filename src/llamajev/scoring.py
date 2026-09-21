@@ -1,7 +1,7 @@
 import math
 
 from .models import ChoiceAnswer, NoulAnswer, NoulQuestion, ScoreAnswer, ScoreQuestion
-from .prompts import Branch
+from .prompts import Branch, serialize
 
 
 def normalize(logprobs: list[float], temperature: float = 1.0) -> list[float]:
@@ -29,7 +29,7 @@ def answer(branch: Branch, logprobs: list[float], temperature: float):
     if isinstance(branch.question, ScoreQuestion):
         return ScoreAnswer(
             score=math.fsum(i * p for i, p in enumerate(probabilities)),
-            legend={str(i): d for i, d in enumerate(branch.question.criteria)},
+            legend={str(i): serialize(d) for i, d in enumerate(branch.question.criteria)},
             probabilities=distribution,
             confidence=confidence(probabilities),
         )

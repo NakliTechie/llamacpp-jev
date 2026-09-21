@@ -26,7 +26,7 @@ QUESTIONS = {
 def main():
     url, folder = sys.argv[1], Path(sys.argv[2])
     truth = json.loads((folder / "truth.json").read_text())
-    walls, prefills, branches, correct, total = [], [], [], 0, 0
+    walls, prefills, branches, correct, total, failed = [], [], [], 0, 0, 0
     with httpx.Client(base_url=url, timeout=300) as client:
         print("health:", client.get("/health").json())
         for name, gt in truth.items():
@@ -40,6 +40,8 @@ def main():
             wall = (time.perf_counter() - t0) * 1000
             if r.status_code != 200:
                 print(f"{name}: ERROR {r.status_code} {r.text}")
+                failed += 1
+                total += len(QUESTIONS)
                 continue
             timing = dict(p.strip().split(";dur=") for p in r.headers["server-timing"].split(","))
             a = r.json()["answers"]
@@ -55,7 +57,10 @@ def main():
                   f"cached={r.headers['x-llamajev-cached-tokens']:>5} | {sum(ok.values())}/4 correct | miss={[k for k, v in ok.items() if not v]}")
     if walls:
         print(f"\nfresh-image median wall={statistics.median(walls):.0f} ms (min {min(walls):.0f}, max {max(walls):.0f}); "
-              f"median prefill={statistics.median(prefills):.0f}; median branches={statistics.median(branches):.0f}; accuracy {correct}/{total}")
+              f"median prefill={statistics.median(prefills):.0f}; median branches={statistics.median(branches):.0f}; "
+              f"accuracy {correct}/{total}; failed requests {failed}/{len(truth)}")
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -59,11 +59,11 @@ def test_compile_splits_prefix_and_renders_options():
     prepared = PromptCompiler(fake_labels()).compile(request, rendered, marker, images)
     assert prepared.prefix == "<|im_start|>user\nhello<|im_end|>\n<|im_start|>user\nPREAMBLE\n\n"
     team = prepared.branches[0]
-    assert team.prompt == prepared.prefix + "Question: Which team?\n\nOptions:\nA: Payments\nB: tech" + ENDING + "Answer:\n"
+    assert team.suffix == "Question: Which team?\n\nOptions:\nA: Payments\nB: tech" + ENDING + "Answer:\n"
     assert team.labels == ["A", "B"] and team.option_keys == ["billing", "tech"]
     assert team.grammar == 'root ::= "A" | "B"'
     assert prepared.branches[1].option_keys == ["true", "false"]
-    assert "A: Yes\nB: No" in prepared.branches[1].prompt
+    assert "A: Yes\nB: No" in prepared.branches[1].suffix
     assert prepared.branches[2].option_keys == ["0", "1"]
 
 
@@ -71,7 +71,7 @@ def test_multiline_description_is_indented():
     request = make_request(q={"type": "choice", "instructions": "x", "criteria": {"a": "line1\nline2", "b": "y"}})
     _, _, marker = build_messages(request, False)
     prepared = PromptCompiler(fake_labels()).compile(request, f"pre {marker}{ENDING}", marker, [])
-    assert "A: line1\n   line2\nB: y" in prepared.branches[0].prompt
+    assert "A: line1\n   line2\nB: y" in prepared.branches[0].suffix
 
 
 def test_compiler_requires_64_labels():
