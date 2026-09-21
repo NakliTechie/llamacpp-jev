@@ -1,0 +1,18 @@
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Local-only planning
+plan/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# llama.cpp checkout / model weights (never commit these)
+/vendor/
+/models/
+*.gguf
