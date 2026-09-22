@@ -125,11 +125,16 @@ Batching the readbacks, or making checkpoint creation yield instead of blocking 
 loop, are the natural things to try — but each should be measured against a captured stall before
 being asserted as the fix.
 
-**To actually resolve it:** capture a stall *with* the instrumentation attached — the surest route
-is to re-run the reproducer on the idle machine while a second process loads the GPU/memory, using
-identical binary and inputs, and record per-tensor copy count, sizes, and durations plus thermal and
-memory-pressure state during the hang. Until then this is a narrowed, load-associated stall with an
-unconfirmed mechanism, not a resolved bug.
+**To actually resolve it:** capture a stall *with* the instrumentation attached, and record
+per-tensor copy count, sizes, and durations plus thermal and memory-pressure state during the hang.
+
+Attempt (2026-09-22): re-ran the reproducer on the idle machine while a second `llama-server`
+(same 2B model) ran continuous generation on the same GPU — 4 streams × 512 tokens, then 8 streams
+× 1024 tokens. The reproducer slowed (worst call 199 ms idle → 413 ms / 321 ms under load) but did
+**not** stall. Total this day: 6 reproducer runs, 0 stalls. So the stall does not reproduce under
+synthetic same-model inference contention; the 2026-09-21 condition ("another process needed the
+GPU") was a different, unidentified workload that has not been recreated. Recreating it precisely —
+knowing what that workload was — is the missing input for a confirmed mechanism.
 
 ## 5. Reproduce
 
