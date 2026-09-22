@@ -81,7 +81,7 @@ def main():
             rows.append((wall, t))
             last = r
             print(f"run {i}: wall={wall:7.1f} ms  prepare={t['prepare']:6.1f}  prefill={t['prefill']:7.1f}  branches={t['branches']:7.1f}"
-                  f"  prefix_tokens={r.headers['x-llamajev-prefix-tokens']} cached={r.headers['x-llamajev-cached-tokens']} truncated={r.headers['x-llamajev-truncated-labels']}")
+                  f"  prefix_tokens={r.headers['x-llamajev-prefix-tokens']} cached={r.headers['x-llamajev-cached-tokens']} retries={r.headers['x-llamajev-readout-retries']}")
         warm = rows[1:] if len(rows) > 1 else rows
 
         def med(k):

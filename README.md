@@ -9,26 +9,28 @@
 Text and **vision**: chat messages may carry `image_url` data-URI parts when `llama-server` runs
 with a multimodal projector (`--mmproj`).
 
-## What was verified (2026-09-21, M4 Pro 24 GB, Metal)
+## What was verified (2026-09-22, M4 Pro 24 GB, Metal)
 
 Model: `unsloth/Qwen3.5-2B-GGUF` `Qwen3.5-2B-Q8_0.gguf` + `mmproj-F16.gguf`. llama.cpp master
 `3d82ef62` (b11063). Full record in [docs/DESIGN.md §5](docs/DESIGN.md).
 
 | Request (default config: 4 slots, slot pinning, `--cache-ram 0`) | Wall (median) | Correct |
 |---|---|---|
-| 4 typed questions about a **never-seen 448×448 image** (8 images) | **946 ms** (826–1048) | 32/32 |
-| Same image repeated | 493 ms | 4/4 |
-| 4 typed text questions, repeated | 381 ms | — |
+| 4 typed questions about a **never-seen 448×448 image** (8 images) | **526 ms** (525–546) | 32/32 |
+| Same image repeated | 254 ms | 4/4 |
+| 4 typed text questions, repeated | 238 ms | — |
 
-The same fresh-image run measured 836 ms (825–898) with `--cache-ram 4096`, the configuration
-that later stalled (below); the two runs were back-to-back and the gap was not re-measured.
+Measured on the refactored serving path (`f0bd69c`: per-evaluation slot lease, readout
+escalation) with the GPU uncontended. The 2026-09-21 pre-refactor run on the same harness read
+946 ms fresh / 493 ms repeated; the machine was serving another job then, so the gap is partly
+load, not code — treat 526 ms as the current-machine number, not a proven speedup.
 
 The idea for this project came from a tweet ([@kis](https://x.com/kis/status/2101426969971916863),
 2026-09-20) claiming that a Jev-compatible server in front of llama.cpp lets "any model behave
 JEV-like without modifications", demoed as Qwen3.5-2B answering 4 questions about a 448×448
 image in 800 ms. No repository was linked or found. **This independent build reproduces the shape
-of the claim and lands within 20% of the number**: ≈ 0.5–0.6 s to encode the image and prefill
-245 prefix tokens, ≈ 0.35 s for four one-token branches. Caveats: the tweet's hardware is unknown; accuracy is measured on synthetic
+of the claim and lands at or under the number**: ≈ 0.29 s to encode the image and prefill
+245 prefix tokens, ≈ 0.23 s for four one-token branches (526 ms total, vs the tweet's 800 ms). Caveats: the tweet's hardware is unknown; accuracy is measured on synthetic
 geometric images (32/32) plus a 6-photo hand-labelled spot check (22/22), not a benchmark; and both Qwen3.5-0.8B and 2B fail
 64-way choices (they collapse onto one label once two-letter labels appear; 4/10/26-way are
 correct at every tested position, and the cause is not established).

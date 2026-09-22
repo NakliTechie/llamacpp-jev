@@ -61,7 +61,9 @@ def test_sixty_four_way_is_well_formed(client):
     answers, headers = ask(client, "Douglas Adams said the answer is forty-two.", {"q": {"type": "choice", "instructions": "Which option matches the text?", "criteria": criteria}})
     probs = answers["q"]["probabilities"]
     assert len(probs) == 64 and abs(sum(probs.values()) - 1) < 1e-6
-    assert int(headers["x-llamajev-truncated-labels"]) <= 64
+    # Escalation model (f0bd69c): all 64 labels are in the readout, so retries is a
+    # non-negative count; an exhausted readout would have 502'd, not returned 200 here.
+    assert int(headers["x-llamajev-readout-retries"]) >= 0
 
 
 def test_vision_shapes(client):

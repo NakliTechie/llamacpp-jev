@@ -96,7 +96,7 @@ def run_smoke(url: str) -> None:
             t0 = time.perf_counter()
             r = client.post("/v1/systemone", json=payload)
             dt = (time.perf_counter() - t0) * 1000
-            print(f"run {i}: HTTP {r.status_code} in {dt:.0f} ms | {r.headers.get('server-timing')} | cached={r.headers.get('x-llamajev-cached-tokens')} truncated={r.headers.get('x-llamajev-truncated-labels')}")
+            print(f"run {i}: HTTP {r.status_code} in {dt:.0f} ms | {r.headers.get('server-timing')} | cached={r.headers.get('x-llamajev-cached-tokens')} retries={r.headers.get('x-llamajev-readout-retries')}")
         print(json.dumps(r.json(), indent=2))
         if r.status_code != 200:
             sys.exit(1)
