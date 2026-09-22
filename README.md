@@ -62,12 +62,12 @@ checkpoints, per-token logprobs (`n_probs`) and GBNF-constrained sampling — th
 [openjev-sglang](https://github.com/ekzhang/openjev-sglang) does on SGLang. A client cannot tell
 which engine is behind it.
 
-**Use something else if:** you need TypeSafe Jev's calibrated (RLCD) probabilities or more than 64
-choice options → TypeSafe Jev; you are on SGLang or a GPU cluster →
-[openjev-sglang](https://github.com/ekzhang/openjev-sglang), the sibling this mirrors; you only want
-free-form generation, not typed decisions → a stock `llama-server` alone. llamajev's probabilities
-are raw label softmax, **not calibrated** — the full contract comparison is in
-[docs/DESIGN.md §1](docs/DESIGN.md).
+**Use something else if:** you want trained-calibrated probabilities or >64 choices, hosted is fine →
+TypeSafe Jev (the hosted original); you run vLLM/SGLang and want calibration + abstention →
+[OpenJev](https://github.com/zhangcy122/OpenJev); you need rich JSON/CFG structure, not one typed
+decision → [Outlines](https://github.com/dottxt-ai/outlines); you only want free-form generation → a
+stock `llama-server`. llamajev's probabilities are raw label softmax, **not calibrated** (4B is
+~calibrated in-domain — [docs/COMPARISON.md](docs/COMPARISON.md)).
 
 ## Provenance
 
@@ -117,4 +117,4 @@ tested position); cause not established. Full record and per-config rows: [docs/
 
 ## License
 
-MIT. — [design](docs/DESIGN.md) · [benchmark](docs/BENCHMARK.md) · [checkpoint-stall report](docs/llama-server-checkpoint-stall.md) · sibling [sglang-jev-diffusion](https://github.com/NakliTechie/sglang-jev-diffusion)
+MIT. — [design](docs/DESIGN.md) · [benchmark](docs/BENCHMARK.md) · [comparison](docs/COMPARISON.md) · [checkpoint-stall](docs/llama-server-checkpoint-stall.md) · sibling [sglang-jev-diffusion](https://github.com/NakliTechie/sglang-jev-diffusion)
