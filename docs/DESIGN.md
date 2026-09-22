@@ -281,3 +281,28 @@ only by the failing case, so a mapping or tokenization-in-context fault for two-
 not excluded (the startup check now verifies each label after `Answer:\n` as well as alone).
 Cause unresolved. The contract still accepts 64
 options; `tests/test_live.py` checks 64-way structurally and 26-way for correctness.
+
+### Batch F record (2026-09-22, CUDA — NVIDIA L4 24 GB, g6.2xlarge spot, us-east-1, AWS via SkyPilot)
+
+Second backend data point. Same model (`Qwen3.5-2B-Q8_0` + `mmproj-F16`), same llama.cpp commit
+`3d82ef62` built with `-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89` (CUDA 13.0, driver 580.159.04).
+GPU-offloaded (`using device CUDA0 (NVIDIA L4)`), instance otherwise idle. Default wrapper config
+(4 slots, slot pinning, `--cache-ram 0`).
+
+| Scenario | Wall (median) | prefill | branches | Correct |
+|---|---|---|---|---|
+| 4 text questions, repeated | 180 ms | 27 | 149 | — |
+| Same image repeated | 207 ms | 53 | 149 | 4/4 |
+| **Fresh 448×448 image, 4 questions** (8 images) | **236 ms** (174–237) | 83 | 148 | 32/32 |
+
+The L4 is ~2× faster than the M4 Pro / Metal fresh-image number (236 ms vs 526 ms), mostly in
+prefill (83 ms vs 292 ms — the image encode); branch time is close (148 ms vs 232 ms).
+
+**Checkpoint stall on CUDA.** Ran `scripts/repro_checkpoint_stall.py` against a raw `llama-server`
+with `--cache-ram 4096` (the Metal stall config). **No stall** (0 of the sequence's calls exceeded
+20 s; slowest 299 ms). Checkpoints were the same size as on Metal (~19.3–22.3 MiB), created at the
+same cadence, and here each `ggml_backend_tensor_get` is a real device→host `cudaMemcpy` (not the
+unified-memory `memcpy` shortcut). So the stall does not reproduce on an idle CUDA box either — it
+stays a load/contention-specific phenomenon, not a backend-intrinsic property of the readback path.
+(Caveat: like the Metal idle runs, this is a single uncontended box; CUDA under concurrent GPU load
+was not tested.)
