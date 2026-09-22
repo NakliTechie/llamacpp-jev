@@ -1,12 +1,14 @@
 # llama-server stalls for minutes inside `create_checkpoint` with `--cache-ram > 0` on a hybrid model with image prompts
 
-Status 2026-09-22: reproduced 5 of 5 on 2026-09-21 (4 through this wrapper, 1 standalone) while the
-GPU was serving another process; stack sample captured. On 2026-09-22, with the GPU otherwise idle,
-the same sequence ran 4 of 4 times to completion with no stall (slowest call 298 ms). The stall is
-**load-dependent**, not deterministic. Root cause resolved by instrumentation (§4): **not
-fragmentation** — the checkpoint is a small number of large contiguous synchronous Metal readbacks,
-and their volume (frequency × size, roughly doubled by `--cache-ram`) blocks for minutes only when a
-concurrent GPU workload contends for the Metal command queue. Not yet filed upstream.
+Status 2026-09-22: reproduced 5 times on 2026-09-21 (4 through this wrapper, 1 standalone) while the
+machine was serving another GPU process; stack sample captured. On 2026-09-22, with the machine
+otherwise idle, the same sequence ran 4 of 4 times to completion with no stall (slowest call 298 ms).
+The stall appears **load-associated**, but this is not established as causation: the two conditions
+also differ in day, binary (2026-09-22 adds instrumentation), thermal state, and initial cache
+state, and the 5 earlier failures were not 5 identical trials. Instrumentation (§4) narrows the
+cause — **no fragmentation was observed** — but does **not** resolve it: no stall was ever captured
+with the instrumentation attached, so the behaviour during a stall is still unmeasured. Not filed
+upstream.
 
 ## 1. Setup
 
@@ -61,56 +63,73 @@ The main loop is inside `create_checkpoint()` serialising the slot's memory stat
 959 of the 1255 samples are in `_platform_memmove` under `~llama_io_write_host()` (which replays
 every `write_tensor()` as a `ggml_backend_tensor_get()`, a `memcpy` from the shared Metal buffer —
 `src/llama-context.cpp:2611-2616`) and 273 in `__bzero` under `update_tgt` (zeroing the
-checkpoint buffer). So the time goes to copying and zeroing checkpoint memory. That 959 samples sit
-in **one** `_platform_memmove` region (not spread across many call sites) already argues for a few
-large copies rather than thousands of tiny ones — confirmed by the instrumentation below.
+checkpoint buffer). Caveat: an aggregated `_platform_memmove` total cannot by itself distinguish a
+few large copies from many copies through the same loop; the count and size distribution of the
+individual tensor copies during a stall is what would settle that, and was not captured.
 
-### Instrumented run (2026-09-22, GPU idle, `-lv 4`)
+### Instrumented run (2026-09-22, machine idle, `-lv 4`) — no stall reproduced
 
 `-lv 4` (not `-lv 3`) surfaces the server's own `created context checkpoint … size = %.3f MiB` line
-(`SLT_TRC`, gated on `LOG_LEVEL_TRACE = 4`). Across a full repro sequence with `--cache-ram 4096`:
+(`SLT_TRC`, gated on `LOG_LEVEL_TRACE = 4`). Across a full repro sequence with `--cache-ram 4096`
+(which did **not** stall):
 
-- 201 checkpoints created, each **19.266 MiB** (≈ 88 KiB per cell for a ~256-cell sequence); ~8–9
-  checkpoints per evaluation, driven by `--checkpoint-min-step 0`.
+- 201 checkpoints created, each **19.266 MiB** for a ~256-cell sequence; ~8–9 checkpoints per
+  evaluation, driven by `--checkpoint-min-step 0`. Note 19.266 MiB is the *destination buffer size*
+  reported by `cur.size()`, not evidence of a single contiguous transfer — the recurrent writer
+  emits a separate tensor copy per layer.
 - A one-line patch in `llama_kv_cache::state_write` and `llama_memory_recurrent::state_write` logged
-  the cell-range counts. **Every serialization was contiguous**: KV path 424 calls, all
-  `cell_ranges = 1`; recurrent path 826 calls, all `cell_count = 1, cell_ranges = 1`. No sequence
-  was ever split into multiple ranges.
-- Checkpoints are created at the same rate with `--cache-ram 0` (207) as with `--cache-ram 4096`
-  (201). What `--cache-ram` adds is the RAM-prompt-cache serialization traffic (the 424 KV
-  `state_write` calls above, which fire only with the cache on) layered on top of the checkpoints.
-- On the idle GPU each of these readbacks costs tens of ms and the whole sequence completes; the
-  stall did not occur in 4 of 4 runs.
+  the cell-range counts. **No fragmentation was observed in these runs**: every serialization used a
+  single cell range (KV path all `cell_ranges = 1`; recurrent path all `cell_count = 1,
+  cell_ranges = 1`). This is a property of the non-stalling runs only; range counts during an actual
+  stall were not captured.
+- The instrument fires on both serialization passes — `state_seq_get_size`
+  (`llama_io_write_dummy`, size estimation) and `state_seq_get_data` (`llama_io_write_host`, the real
+  write) both call `state_write` (`src/llama-context.cpp:3096,3113,3348`). The raw 424 (KV) / 826
+  (recurrent) line counts therefore mix both passes and are not readback counts; only the host pass
+  performs `ggml_backend_tensor_get`.
+- Checkpoints are created at a similar rate with `--cache-ram 0` (207) and `--cache-ram 4096` (201).
+- Every call completed in tens to low-hundreds of ms; the stall did not occur in 4 of 4 runs, so
+  per-readback timing under stall conditions remains unmeasured.
 
-## 4. Resolved cause (instrumented 2026-09-22)
+## 4. What the instrumentation settled, and what it did not
 
-**Fragmentation is ruled out.** The original primary hypothesis was that `--cache-ram`'s repeated
-save/load/`seq_rm` cycles fragment a sequence's cells so that `state_write_data` emits thousands of
-tiny `write_tensor`/`ggml_backend_tensor_get` calls. The instrumentation refutes it: every
-serialization of every sequence was a single contiguous range (`cell_ranges = 1`, KV and recurrent
-alike, 1250 samples). The cells never fragment. This is consistent with the stack sample, where the
-readback time collapses into one large `_platform_memmove` region rather than many small call sites.
+**Fragmentation was not observed** (the original primary hypothesis is unsupported, not proven
+false). That hypothesis was that `--cache-ram`'s save/load/`seq_rm` cycles fragment a sequence's
+cells so `state_write_data` emits thousands of tiny `write_tensor`/`ggml_backend_tensor_get` calls.
+In every instrumented run every serialization used a single cell range (`cell_ranges = 1`, KV and
+recurrent). But all instrumented runs were on an idle machine and none stalled, so this rules out
+fragmentation *in the non-stalling case*; the cell-range count during an actual stall was never
+captured.
 
-**The cost is the volume of large contiguous synchronous readbacks, not their shape.** Each
-checkpoint serialises one contiguous ~19 MiB block (`state_seq_get_data` → `~llama_io_write_host`
-replaying `write_tensor` as per-tensor `ggml_backend_tensor_get`, a synchronous `memcpy` from the
-shared Metal buffer, `src/llama-context.cpp:2611-2616`). Checkpoints are created ~8–9 times per
-evaluation (`--checkpoint-min-step 0`, `--ctx-checkpoints 32`), and with `--cache-ram` the RAM
-prompt cache adds a second stream of the same full-sequence readbacks. The per-readback cost is
-tens of ms when the Metal command queue is idle, so on a free GPU the run completes (4 of 4). Under
-a concurrent GPU workload (the 2026-09-21 condition), these synchronous readbacks serialise behind
-the other process's Metal work and each checkpoint blocks for many seconds; with ~8–9 per evaluation
-plus the doubled `--cache-ram` traffic, an evaluation stalls for minutes. `--cache-ram 0` avoids it
-by removing the extra readback stream, not by keeping cells contiguous (they were always
-contiguous).
+**The expensive operation, and why it is not obviously GPU-bound.** Checkpoint creation runs
+`state_seq_get_data` → `~llama_io_write_host`, whose destructor replays each `write_tensor` as a
+`ggml_backend_tensor_get` (`src/llama-context.cpp:2606-2615`). On Apple-silicon unified memory the
+tensor buffers are shared, so `ggml_metal_buffer_get_tensor` takes the `if (buf->is_shared) memcpy`
+path and returns without touching the Metal command queue
+(`ggml/src/ggml-metal/ggml-metal-device.m:2377`). So the earlier "Metal command-queue contention"
+explanation is wrong: the readbacks are plain host `memcpy`s (plus a `bzero` of the destination),
+which is what the stack sample shows. Why those `memcpy`/`bzero` operations would block for minutes
+under concurrent load is **not established** — memory-bandwidth or allocator contention is a
+plausible but unmeasured hypothesis.
 
-**Why it looks like a hybrid-model problem.** Qwen3.5's gated-delta layers need context checkpoints
-to rewind, so this path is exercised heavily; a pure-attention model with the same request shape
-creates far fewer checkpoints. The underlying issue — `TODO: add backend support to batch
-tensor_get?` at `src/llama-context.cpp:2610` — is that `~llama_io_write_host` issues one blocking
-`ggml_backend_tensor_get` per tensor with no batching or async path, so checkpoint serialisation is
-serially latency-bound on the backend queue. That is the fix surface: batch the readbacks, or make
-checkpoint creation yield instead of blocking the slot's decode loop.
+**Frequency is real but its effect is unquantified.** Checkpoints are created ~8–9 times per
+evaluation (`--checkpoint-min-step 0`, `--ctx-checkpoints 32`); `state_write` is also invoked twice
+per serialization (a size-estimation `llama_io_write_dummy` pass and the real `llama_io_write_host`
+pass), and `--cache-ram` adds prompt-cache serializations. The raw instrument line counts conflate
+these, so no traffic multiplier is claimed here.
+
+**Candidate fix surface (a hypothesis to test, not a validated remedy).** The standing
+`TODO: add backend support to batch tensor_get?` at `src/llama-context.cpp:2610` means
+`~llama_io_write_host` issues one blocking `ggml_backend_tensor_get` per tensor with no batching.
+Batching the readbacks, or making checkpoint creation yield instead of blocking the slot's decode
+loop, are the natural things to try — but each should be measured against a captured stall before
+being asserted as the fix.
+
+**To actually resolve it:** capture a stall *with* the instrumentation attached — the surest route
+is to re-run the reproducer on the idle machine while a second process loads the GPU/memory, using
+identical binary and inputs, and record per-tensor copy count, sizes, and durations plus thermal and
+memory-pressure state during the hang. Until then this is a narrowed, load-associated stall with an
+unconfirmed mechanism, not a resolved bug.
 
 ## 5. Reproduce
 
