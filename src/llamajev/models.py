@@ -2,7 +2,8 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+import orjson
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from .config import MAX_ANSWERS, MAX_QUESTIONS
 
@@ -91,6 +92,17 @@ class SystemOneRequest(StrictModel):
         max_length=MAX_QUESTIONS,
         description="1-64 questions keyed by your own identifiers; the response preserves them.",
     )
+
+    @model_validator(mode="after")
+    def _json_encodable(self) -> "SystemOneRequest":
+        # Reject inputs that parse but cannot be re-serialized (ints beyond 64 bits, lone
+        # surrogates in question keys) up front, as a 422, instead of a 500 later when the
+        # state is forwarded to the backend or the answer keys are rendered.
+        try:
+            orjson.dumps([self.state, list(self.questions.keys())])
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"state or question keys are not JSON-encodable: {exc}") from exc
+        return self
 
 
 class NoulAnswer(StrictModel):

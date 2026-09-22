@@ -5,6 +5,8 @@ goes into the messages, where the prefix/suffix boundary is, and how options bec
 labels. It is pure so it can be unit-tested without a backend.
 """
 
+import base64
+import binascii
 import itertools
 import string
 from dataclasses import dataclass
@@ -15,6 +17,11 @@ import orjson
 
 from .config import MAX_ANSWERS
 from .models import ChoiceQuestion, Content, NoulQuestion, Question, SystemOneRequest
+
+# Generous defaults so pure unit tests need not supply limits; the API passes Settings values.
+DEFAULT_MAX_IMAGES = 64
+DEFAULT_MAX_IMAGE_BYTES = 64 * 1024 * 1024
+DEFAULT_MAX_IMAGE_PIXELS = 1 << 30
 
 PREAMBLE = (
     "Evaluate the preceding conversation or state using the question below. "
@@ -44,7 +51,50 @@ def label_candidates():
         yield "".join(pair)
 
 
-def state_messages(state: Content, allow_images: bool) -> tuple[list[dict[str, Any]], list[str]]:
+def _image_dimensions(data: bytes) -> tuple[int, int] | None:
+    """(width, height) for PNG and JPEG from the header only; None for other formats."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR":
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    if data[:2] == b"\xff\xd8":  # JPEG: walk segments to a start-of-frame marker
+        i = 2
+        while i + 9 < len(data):
+            if data[i] != 0xFF:
+                i += 1
+                continue
+            marker = data[i + 1]
+            if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                return int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
+            segment = int.from_bytes(data[i + 2:i + 4], "big")
+            if segment < 2:
+                break
+            i += 2 + segment
+    return None
+
+
+def _checked_image(payload: str, max_bytes: int, max_pixels: int) -> str:
+    """Validate a base64 image payload against decoded-byte and pixel bounds; return it unchanged."""
+    if len(payload) * 3 // 4 > max_bytes:  # cheap pre-check before allocating the decoded bytes
+        raise ContentError(f"image payload exceeds {max_bytes} decoded bytes")
+    try:
+        data = base64.b64decode(payload)
+    except (binascii.Error, ValueError) as exc:
+        raise ContentError("image_url payload is not valid base64") from exc
+    if len(data) > max_bytes:
+        raise ContentError(f"image payload exceeds {max_bytes} decoded bytes")
+    dims = _image_dimensions(data)
+    if dims and dims[0] * dims[1] > max_pixels:
+        raise ContentError(f"image is {dims[0]}x{dims[1]}, over the {max_pixels}-pixel limit")
+    return payload
+
+
+def state_messages(
+    state: Content,
+    allow_images: bool,
+    *,
+    max_images: int = DEFAULT_MAX_IMAGES,
+    max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
+    max_image_pixels: int = DEFAULT_MAX_IMAGE_PIXELS,
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Return (messages, images). Images are base64 payloads in document order.
 
     Chat transcripts are recognized as a list of {role, content} objects or exactly
@@ -82,7 +132,9 @@ def state_messages(state: Content, allow_images: bool) -> tuple[list[dict[str, A
                 url = part.get("image_url", {}).get("url") if isinstance(part.get("image_url"), dict) else None
                 if not isinstance(url, str) or not url.startswith("data:") or "," not in url:
                     raise ContentError("image_url must be a data: URI with base64 payload")
-                images.append(url.split(",", 1)[1])
+                if len(images) >= max_images:
+                    raise ContentError(f"more than {max_images} images in one request")
+                images.append(_checked_image(url.split(",", 1)[1], max_image_bytes, max_image_pixels))
                 continue
             raise ContentError("Chat content parts must be text or image_url")
     return candidate, images
@@ -117,11 +169,39 @@ class Prepared:
     images: list[str]
 
 
-def build_messages(request: SystemOneRequest, allow_images: bool) -> tuple[list[dict], list[str], str]:
+def build_messages(
+    request: SystemOneRequest,
+    allow_images: bool,
+    *,
+    max_images: int = DEFAULT_MAX_IMAGES,
+    max_image_bytes: int = DEFAULT_MAX_IMAGE_BYTES,
+    max_image_pixels: int = DEFAULT_MAX_IMAGE_PIXELS,
+) -> tuple[list[dict], list[str], str]:
     """Messages to render, the images they reference, and the marker that splits prefix/suffix."""
     marker = f"LLAMAJEV_QUESTION_{uuid4().hex}"
-    messages, images = state_messages(request.state, allow_images)
-    return [*messages, {"role": "user", "content": PREAMBLE + "\n\n" + marker}], images, marker
+    messages, images = state_messages(
+        request.state,
+        allow_images,
+        max_images=max_images,
+        max_image_bytes=max_image_bytes,
+        max_image_pixels=max_image_pixels,
+    )
+    tail = PREAMBLE + "\n\n" + marker
+    # Append to a trailing user turn rather than adding a second consecutive user message, which
+    # chat templates that enforce strict user/assistant alternation (e.g. Mistral) reject.
+    last = messages[-1] if messages else None
+    if last is not None and last.get("role") == "user":
+        content = last.get("content")
+        if isinstance(content, str) or content is None:
+            merged = f"{content}\n\n{tail}" if content else tail
+            messages[-1] = {**last, "content": merged}
+        elif isinstance(content, list):
+            messages[-1] = {**last, "content": [*content, {"type": "text", "text": tail}]}
+        else:
+            messages = [*messages, {"role": "user", "content": tail}]
+    else:
+        messages = [*messages, {"role": "user", "content": tail}]
+    return messages, images, marker
 
 
 class PromptCompiler:

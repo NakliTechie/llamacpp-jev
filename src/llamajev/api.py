@@ -11,7 +11,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__
-from .backend import BackendError, LlamaClient
+from .backend import BackendError, LlamaClient, sanitize_url
 from .config import MAX_ANSWERS, MAX_QUESTIONS, Settings
 from .models import (
     ErrorResponse,
@@ -37,23 +37,32 @@ def error(status: int, code: str, message: str, headers: dict | None = None) -> 
 class BodyLimit:
     """Bound even chunked request bodies before JSON parsing."""
 
-    def __init__(self, app: ASGIApp, max_bytes: int):
+    def __init__(self, app: ASGIApp, max_bytes: int, read_timeout: float = 30.0):
         self.app = app
         self.max_bytes = max_bytes
+        self.read_timeout = read_timeout
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
         if scope["type"] != "http" or scope["method"] not in {"POST", "PUT", "PATCH"}:
             return await self.app(scope, receive, send)
         body = bytearray()
-        while True:
-            event = await receive()
-            if event["type"] == "http.disconnect":
-                return
-            body.extend(event.get("body", b""))
-            if len(body) > self.max_bytes:
-                return await error(413, "body_too_large", "Request body is too large")(scope, receive, send)
-            if not event.get("more_body", False):
-                break
+        try:
+            deadline = asyncio.get_running_loop().time() + self.read_timeout
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    raise TimeoutError
+                event = await asyncio.wait_for(receive(), timeout=remaining)
+                if event["type"] == "http.disconnect":
+                    return
+                body.extend(event.get("body", b""))
+                if len(body) > self.max_bytes:
+                    return await error(413, "body_too_large", "Request body is too large")(scope, receive, send)
+                if not event.get("more_body", False):
+                    break
+        except TimeoutError:
+            # A slow/stalled upload must not hold a worker before admission control; cut it off.
+            return await error(408, "validation", "Request body was not received in time")(scope, receive, send)
         delivered = False
 
         async def replay():
@@ -113,7 +122,7 @@ def create_app(
             "candidate-label logprobs renormalized with softmax."
         ),
     )
-    app.add_middleware(BodyLimit, max_bytes=settings.max_body_bytes)
+    app.add_middleware(BodyLimit, max_bytes=settings.max_body_bytes, read_timeout=settings.body_read_timeout)
 
     @app.exception_handler(RequestError)
     @app.exception_handler(BackendError)
@@ -151,7 +160,9 @@ def create_app(
                 result.response.model_dump(),
                 headers={
                     "x-typesafe-request-id": uuid4().hex,
-                    "x-llamajev-model": service.served_model_name,
+                    # HTTP headers are Latin-1; keep the real (possibly Unicode) name in the JSON body,
+                    # expose an ASCII-safe form in the header so a Unicode model name cannot 500.
+                    "x-llamajev-model": service.served_model_name.encode("ascii", "replace").decode() or "model",
                     "x-llamajev-prefix-tokens": str(result.prefix_tokens),
                     "x-llamajev-cached-tokens": str(result.cached_tokens),
                     "x-llamajev-readout-retries": str(result.readout_retries),
@@ -199,7 +210,7 @@ def create_app(
         healthy = service is not None and await service.backend.health()
         body = {
             "status": "ok" if healthy else "unavailable",
-            "backend_url": settings.backend_url,
+            "backend_url": sanitize_url(settings.backend_url),
             "startup_seconds": getattr(request.app.state, "startup_seconds", None),
         }
         if service is not None:

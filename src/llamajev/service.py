@@ -84,7 +84,13 @@ class EvaluationService:
     async def _evaluate(self, request: SystemOneRequest) -> Evaluation:
         t0 = time.perf_counter()
         try:
-            messages, images, marker = build_messages(request, self.props.vision)
+            messages, images, marker = build_messages(
+                request,
+                self.props.vision,
+                max_images=self.settings.max_images,
+                max_image_bytes=self.settings.max_image_bytes,
+                max_image_pixels=self.settings.max_image_pixels,
+            )
             rendered = await self.backend.apply_template(messages)
             prepared = self.compiler.compile(request, rendered, marker, images)
         except ContentError as exc:

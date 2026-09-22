@@ -1,3 +1,5 @@
+from itertools import pairwise
+
 import pytest
 from conftest import ENDING, fake_labels
 
@@ -83,3 +85,51 @@ def test_marker_must_survive_template():
     request = make_request(q={"type": "noul", "instructions": "x"})
     with pytest.raises(ContentError):
         PromptCompiler(fake_labels()).compile(request, "no marker here", "MARK", [])
+
+
+# --- hardening: message alternation + image bounds ---
+
+def _png(width: int, height: int) -> str:
+    import base64
+    header = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x0dIHDR" + width.to_bytes(4, "big") + height.to_bytes(4, "big")
+    return base64.b64encode(header).decode()
+
+
+def test_no_two_consecutive_user_messages_when_state_ends_in_user():
+    # State ending in a user turn: the preamble merges into it, not a second user message.
+    req = SystemOneRequest(model="jev-latest", state=[{"role": "user", "content": "hi"}],
+                           questions={"q": {"type": "noul", "instructions": "x"}})
+    messages, _, marker = build_messages(req, allow_images=False)
+    roles = [m["role"] for m in messages]
+    assert not any(a == b == "user" for a, b in pairwise(roles)), roles
+    assert marker in messages[-1]["content"] and "hi" in messages[-1]["content"]
+
+
+def test_assistant_tail_gets_a_new_user_message():
+    req = SystemOneRequest(model="jev-latest", state=[{"role": "user", "content": "hi"},
+                                                      {"role": "assistant", "content": "yo"}],
+                           questions={"q": {"type": "noul", "instructions": "x"}})
+    messages, _, _ = build_messages(req, allow_images=False)
+    assert messages[-1]["role"] == "user" and messages[-2]["role"] == "assistant"
+
+
+def test_too_many_images_rejected():
+    chat = [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}},
+    ]}]
+    with pytest.raises(ContentError, match="more than 1 image"):
+        state_messages(chat, allow_images=True, max_images=1)
+
+
+def test_oversized_image_bytes_rejected():
+    big = "A" * 200  # est ~150 decoded bytes
+    chat = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{big}"}}]}]
+    with pytest.raises(ContentError, match="decoded bytes"):
+        state_messages(chat, allow_images=True, max_image_bytes=10)
+
+
+def test_pixel_bomb_rejected():
+    chat = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_png(5000, 5000)}"}}]}]
+    with pytest.raises(ContentError, match="pixel limit"):
+        state_messages(chat, allow_images=True, max_image_pixels=1000)

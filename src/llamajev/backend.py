@@ -141,8 +141,12 @@ class LlamaClient:
 
     async def _post(self, path: str, body: dict[str, Any]) -> httpx.Response:
         try:
+            content = orjson.dumps(body)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise BackendError(f"request is not JSON-serializable: {exc}", 422, "validation") from exc
+        try:
             response = await self.client.post(
-                path, content=orjson.dumps(body), headers={"Content-Type": "application/json"}
+                path, content=content, headers={"Content-Type": "application/json"}
             )
         except httpx.TimeoutException as exc:
             raise BackendError("llama-server request timed out", 504, "backend_timeout") from exc
@@ -151,9 +155,21 @@ class LlamaClient:
         return check(response)
 
 
+def sanitize_url(url: str) -> str:
+    """Origin only (scheme://host:port) — drop any userinfo credentials and query so a URL that
+    reaches a client (health, error text) never carries a token or password."""
+    try:
+        parsed = httpx.URL(url)
+        host = parsed.host or ""
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{parsed.scheme}://{host}{port}" if host else "the backend"
+    except (httpx.InvalidURL, ValueError):
+        return "the backend"
+
+
 def unreachable(client: httpx.AsyncClient) -> str:
     return (
-        f"llama-server unreachable at {client.base_url} — start it with "
+        f"llama-server unreachable at {sanitize_url(str(client.base_url))} — start it with "
         "`llamajev serve --model <gguf>` or point --connect at a running server"
     )
 
@@ -182,7 +198,9 @@ def check(response: httpx.Response) -> httpx.Response:
         raise BackendError(f"llama-server rejected the request: {message}", 422, "validation")
     if status in {429, 503, 529}:
         raise BackendError(f"llama-server is overloaded: {message}", 529, "overloaded")
-    raise BackendError(f"llama-server returned HTTP {status}: {message}", 502, "backend_error")
+    # Unexpected backend status: the raw body can carry internal detail (paths, config), so keep it
+    # out of the client-facing error — the status alone tells the operator where to look in the logs.
+    raise BackendError(f"llama-server returned HTTP {status}", 502, "backend_error")
 
 
 def parse_generation(data: dict, want_probs: bool) -> Generation:

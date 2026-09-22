@@ -16,9 +16,20 @@ class Settings(BaseSettings):
         default=None, description="Public model ID; defaults to the GGUF file stem from /props."
     )
     max_body_bytes: int = Field(default=2 * 1024 * 1024, gt=0)
+    body_read_timeout: float = Field(
+        default=30, gt=0, description="Deadline to receive the whole request body (guards slow uploads)."
+    )
     max_concurrent_requests: int = Field(default=16, gt=0)
     request_timeout: float = Field(default=120, gt=0, description="Deadline for one whole evaluation (seconds).")
     startup_timeout: float = Field(default=600, gt=0)
+    # Vision resource bounds — a small compressed image can decode to a large allocation.
+    max_images: int = Field(default=8, gt=0, description="Maximum image_url parts per request.")
+    max_image_bytes: int = Field(
+        default=8 * 1024 * 1024, gt=0, description="Maximum decoded bytes of a single image payload."
+    )
+    max_image_pixels: int = Field(
+        default=24_000_000, gt=0, description="Maximum width×height of a single image (decompression-bomb guard)."
+    )
     temperature: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     top_n: int = Field(default=256, ge=2, description="n_probs requested per branch (readout depth).")
     pin_slot: bool = Field(

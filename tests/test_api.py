@@ -1,6 +1,13 @@
 
+import httpx as _httpx
 import pytest
-from conftest import sigmoid
+from conftest import FakeBackend, fake_labels, sigmoid
+
+from llamajev.api import create_app
+from llamajev.backend import Props
+from llamajev.config import Settings
+from llamajev.prompts import PromptCompiler
+from llamajev.service import EvaluationService
 
 
 async def test_request_prefills_then_branches(api, payload):
@@ -163,3 +170,53 @@ async def test_models_limits_health(api):
     assert health.json()["labels_verified"] == 64 and health.json()["vision"] is False
     backend.healthy = False
     assert (await client.get("/health")).status_code == 503
+
+
+# --- hardening: no credential/500 leaks, serialization edges ---
+
+
+async def _make_client(settings):
+    backend = FakeBackend()
+    props = Props(model_path="/models/Qwen3.5-2B-Q8_0.gguf", n_ctx=8192, n_slots=4, vision=False, media_marker="<__media__>")
+    service = EvaluationService(settings, PromptCompiler(fake_labels()), backend, props)
+    app = create_app(settings, service=service)
+    client = _httpx.AsyncClient(transport=_httpx.ASGITransport(app=app), base_url="http://test")
+    client.app = app
+    return client, app
+
+
+async def test_health_does_not_leak_backend_credentials():
+    settings = Settings(top_n=256, backend_url="http://user:sekret@10.0.0.9:8090/x?token=abcd")
+    client, app = await _make_client(settings)
+    async with client, app.router.lifespan_context(app):
+        r = await client.get("/health")
+    text = r.text
+    assert "sekret" not in text and "user" not in text and "token" not in text and "abcd" not in text
+    assert r.json()["backend_url"] == "http://10.0.0.9:8090"
+
+
+async def test_unicode_served_model_name_does_not_500(payload):
+    settings = Settings(top_n=256, served_model_name="模型")  # 模型
+    client, app = await _make_client(settings)
+    async with client, app.router.lifespan_context(app):
+        r = await client.post("/v1/systemone", json=payload)
+    assert r.status_code == 200, r.text
+    assert r.headers["x-llamajev-model"].isascii()
+
+
+async def test_oversized_int_in_chat_message_is_422_not_500(api):
+    client, _ = api
+    payload = {"model": "jev-latest",
+               "state": [{"role": "user", "content": "x", "metadata": 2 ** 80}],
+               "questions": {"q": {"type": "noul", "instructions": "x"}}}
+    r = await client.post("/v1/systemone", json=payload)
+    assert r.status_code == 422, r.text
+    assert r.json()["error"]["code"] == "validation"
+
+
+async def test_lone_surrogate_question_key_is_not_500(api):
+    client, _ = api
+    body = '{"model":"jev-latest","state":"x","questions":{"\\ud800":{"type":"noul","instructions":"x"}}}'
+    r = await client.post("/v1/systemone", content=body.encode("utf-8", "surrogatepass"),
+                          headers={"content-type": "application/json"})
+    assert r.status_code in {400, 422}, r.text
