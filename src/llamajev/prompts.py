@@ -70,6 +70,11 @@ def _checked_image(payload: str, max_bytes: int, max_pixels: int) -> tuple[str, 
         raise ContentError("image_url payload is not valid base64") from exc
     if len(data) > max_bytes:
         raise ContentError(f"image payload exceeds {max_bytes} decoded bytes")
+    # Allowlist by signature BEFORE opening: some Pillow plugins (e.g. ICO) decode pixels during
+    # open, which would sidestep the pixel budget. PNG and JPEG are read lazily (size from the
+    # header only) and are what the mmproj path expects.
+    if not (data[:8] == b"\x89PNG\r\n\x1a\n" or data[:3] == b"\xff\xd8\xff"):
+        raise ContentError("image_url must be PNG or JPEG")
     try:
         with Image.open(io.BytesIO(data)) as img:
             width, height = img.size
@@ -126,7 +131,8 @@ def state_messages(
                     )
                 url = part.get("image_url", {}).get("url") if isinstance(part.get("image_url"), dict) else None
                 header, _, payload = url.partition(",") if isinstance(url, str) else ("", "", "")
-                if not payload or not header.startswith("data:image/") or ";base64" not in header:
+                mediatype, *params = header.lower().split(";")  # RFC 2045: media type and flags are case-insensitive
+                if not payload or not mediatype.startswith("data:image/") or "base64" not in params:
                     raise ContentError("image_url must be a data:image/*;base64 URI")
                 if len(images) >= max_images:
                     raise ContentError(f"more than {max_images} images in one request")

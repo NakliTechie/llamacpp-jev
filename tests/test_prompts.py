@@ -132,7 +132,7 @@ def test_too_many_images_rejected():
 
 def test_non_image_payload_rejected():
     chat = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}]}]
-    with pytest.raises(ContentError, match="not a decodable image"):
+    with pytest.raises(ContentError, match="PNG or JPEG"):
         state_messages(chat, allow_images=True)
 
 
@@ -142,8 +142,31 @@ def test_lying_mime_still_validated_by_bytes():
     state_messages([{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{ok}"}}]}], allow_images=True)
     import base64
     junk = base64.b64encode(b"not an image at all").decode()
-    with pytest.raises(ContentError, match="not a decodable image"):
+    with pytest.raises(ContentError, match="PNG or JPEG"):
         state_messages([{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{junk}"}}]}], allow_images=True)
+
+
+def test_uppercase_mime_and_missing_base64_flag():
+    ok = _img()
+    # Uppercase media type is valid (RFC 2045 case-insensitive).
+    state_messages([{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:IMAGE/PNG;base64,{ok}"}}]}], allow_images=True)
+    # A ";base64=garbage" flag is not the base64 token → rejected.
+    with pytest.raises(ContentError, match="data:image"):
+        state_messages([{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64=x,{ok}"}}]}], allow_images=True)
+
+
+def test_ico_rejected_before_decode():
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 32), "white").save(buf, format="ICO")
+    ico = base64.b64encode(buf.getvalue()).decode()
+    chat = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/x-icon;base64,{ico}"}}]}]
+    with pytest.raises(ContentError, match="PNG or JPEG"):
+        state_messages(chat, allow_images=True)
 
 
 def test_oversized_image_bytes_rejected():
