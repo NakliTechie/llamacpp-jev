@@ -105,7 +105,7 @@ Measured 2026-09-22 on Qwen3.5-2B-Q8_0, M4 Pro 24 GB, Metal, default config (4 s
 | Request | Wall (median) | Correct |
 |---|---|---|
 | 4 typed questions on a never-seen 448×448 image (8 images) | **526 ms** (525–546) | 32/32 |
-| Same image repeated | 254 ms | 4/4 |
+| Same image repeated | 254 ms | — |
 | 4 typed text questions, repeated | 238 ms | — |
 
 Accuracy is synthetic geometric images (32/32) plus a 6-photo hand-labelled spot check (22/22), not

@@ -225,8 +225,8 @@ red shape / count / blue square? / circle quadrant).
 | Fresh image, 4 questions | 4 slots, unpinned | 1917 ms (1886–1935) | 449 | 1463 | 32/32 |
 | **Fresh image, 4 questions** | 4 slots, **pinned** | **836 ms** (825–898) | 496 | 336 | 32/32 |
 | Fresh image, 4 questions | 4 slots, pinned, cache-ram 0 | 946 ms (826–1048) | 604 | 373 | 32/32 |
-| Same image repeated | 4 slots, unpinned | 259 ms | 34 | 204 | 4/4 |
-| Same image repeated | 4 slots, pinned, cache-ram 0 | 493 ms | 36 | 451 | 4/4 |
+| Same image repeated | 4 slots, unpinned | 259 ms | 34 | 204 | — |
+| Same image repeated | 4 slots, pinned, cache-ram 0 | 493 ms | 36 | 451 | — |
 | Same image repeated | 4 slots, pinned, cache-ram 4096 | **504 timeout** (2 of 2) | — | — | — |
 
 Reading: a fresh image costs ≈ 0.5 s of prefill (245 prefix tokens incl. 196 image tokens at
@@ -247,7 +247,7 @@ Qwen3.5-2B-Q8_0.gguf --mmproj mmproj-F16.gguf --llama-server
 | Scenario | Config | Wall (median) | prefill | branches | Correct |
 |---|---|---|---|---|---|
 | 4 text questions, repeated | 4 slots, pinned, cache-ram 0 | 238 ms | 21 | 210 | — |
-| Same image repeated | 4 slots, pinned, cache-ram 0 | 254 ms | 20 | 232 | 4/4 |
+| Same image repeated | 4 slots, pinned, cache-ram 0 | 254 ms | 20 | 232 | — |
 | **Fresh 448×448 image, 4 questions** (8 images) | 4 slots, pinned, cache-ram 0 | **526 ms** (525–546) | 292 | 232 | 32/32 |
 
 The three rows are directly comparable to the 2026-09-21 default-config rows above (946 / 493 / 381
@@ -292,7 +292,7 @@ GPU-offloaded (`using device CUDA0 (NVIDIA L4)`), instance otherwise idle. Defau
 | Scenario | Wall (median) | prefill | branches | Correct |
 |---|---|---|---|---|
 | 4 text questions, repeated | 180 ms | 27 | 149 | — |
-| Same image repeated | 207 ms | 53 | 149 | 4/4 |
+| Same image repeated | 207 ms | 53 | 149 | — (bench.py does not score) |
 | **Fresh 448×448 image, 4 questions** (8 images) | **236 ms** (174–237) | 83 | 148 | 32/32 |
 
 The L4 is ~2× faster than the M4 Pro / Metal fresh-image number (236 ms vs 526 ms), mostly in
@@ -302,7 +302,6 @@ prefill (83 ms vs 292 ms — the image encode); branch time is close (148 ms vs 
 with `--cache-ram 4096` (the Metal stall config). **No stall** (0 of the sequence's calls exceeded
 20 s; slowest 299 ms). Checkpoints were the same size as on Metal (~19.3–22.3 MiB), created at the
 same cadence, and here each `ggml_backend_tensor_get` is a real device→host `cudaMemcpy` (not the
-unified-memory `memcpy` shortcut). So the stall does not reproduce on an idle CUDA box either — it
-stays a load/contention-specific phenomenon, not a backend-intrinsic property of the readback path.
-(Caveat: like the Metal idle runs, this is a single uncontended box; CUDA under concurrent GPU load
-was not tested.)
+unified-memory `memcpy` shortcut). The stall did not reproduce in this idle CUDA run. That is
+consistent with the load/contention hypothesis, but a single idle box does not establish causality
+or exclude backend-specific behaviour under other conditions; concurrent CUDA load was not tested.
