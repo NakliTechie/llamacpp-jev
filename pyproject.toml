@@ -20,6 +20,8 @@ llamajev = "llamajev.cli:main"
 
 [dependency-groups]
 dev = [
+    "matplotlib>=3.9",
+    "pyarrow>=17",
     "pytest>=8",
     "pytest-asyncio>=0.24",
     "ruff>=0.6",

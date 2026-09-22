@@ -117,4 +117,4 @@ tested position); cause not established. Full record and per-config rows: [docs/
 
 ## License
 
-MIT. — [design & measurements](docs/DESIGN.md) · [checkpoint-stall report](docs/llama-server-checkpoint-stall.md) · sibling [sglang-jev-diffusion](https://github.com/NakliTechie/sglang-jev-diffusion)
+MIT. — [design](docs/DESIGN.md) · [benchmark](docs/BENCHMARK.md) · [checkpoint-stall report](docs/llama-server-checkpoint-stall.md) · sibling [sglang-jev-diffusion](https://github.com/NakliTechie/sglang-jev-diffusion)
