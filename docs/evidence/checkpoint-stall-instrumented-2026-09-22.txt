@@ -1,0 +1,21 @@
+# Instrumented checkpoint-stall run — 2026-09-22, Qwen3.5-2B-Q8_0 + mmproj-F16, Metal M4 Pro, GPU idle
+# Binary: ~/Code/llama.cpp-dev/build-metal (3d82ef62 + JEV-INSTRUMENT log lines in llama-kv-cache.cpp state_write and llama-memory-recurrent.cpp state_write)
+# Server: llama-server ... -np 4 -c 8192 -ngl 99 --cache-ram 4096 --ctx-checkpoints 32 --checkpoint-min-step 0 --reasoning-budget 0 -lv 4
+# Repro: scripts/repro_checkpoint_stall.py (image A x2, 8 fresh, image A x5, text x3, image A x5)
+
+## Stall occurrence
+STALLED calls this run: 0   (also 0 in repro-instr-cacheon.out, repro-cacheoff.out, repro.out, repro2.out)
+Slowest call (ms): 298
+
+## Checkpoint sizes (created context checkpoint … size)
+ 201 size = 19.266 MiB
+Total checkpoints created: 201
+
+## Fragmentation: cell-range counts per serialization (the decisive measurement)
+KV path (llama_kv_cache::state_write, --cache-ram traffic):
+  lines=424  distribution:  424 cell_ranges = 1 
+Recurrent path (llama_memory_recurrent::state_write, checkpoint-dominant):
+  lines=826  distribution:  826 cell_count = 1, cell_ranges = 1, data_ranges = 1;
+
+## cache-off control (--cache-ram 0)
+checkpoints created: 207   KV state_write instrument hits: 0
