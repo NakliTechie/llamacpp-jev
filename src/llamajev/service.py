@@ -99,15 +99,17 @@ class EvaluationService:
         try:
             warm = await self.backend.complete(prepared.prefix, images=prepared.images or None, id_slot=slot)
             t2 = time.perf_counter()
-            results, retries = await self._branches(prepared.prefix, prepared.branches, prepared.images, slot)
+            results, retries, retry_cached, retry_input = await self._branches(
+                prepared.prefix, prepared.branches, prepared.images, slot
+            )
             t3 = time.perf_counter()
         finally:
             if self.slots and slot is not None:
                 self.slots.release(slot)
 
         answers = {}
-        cached = warm.cached_tokens
-        input_tokens = warm.total_prompt_tokens
+        cached = warm.cached_tokens + retry_cached
+        input_tokens = warm.total_prompt_tokens + retry_input
         for b, gen in results:
             logprobs = [gen.logprobs[token_id] for token_id in b.label_ids]
             try:
@@ -139,9 +141,13 @@ class EvaluationService:
 
     async def _branches(self, prefix: str, branches: list[Branch], images: list[str], slot: int | None):
         retries = 0
+        # Failed readout attempts still ran on the backend; their token counts must be
+        # billed, or usage/cached headers undercount real work whenever a retry happened.
+        retry_cached = 0
+        retry_input = 0
 
         async def run(b: Branch):
-            nonlocal retries
+            nonlocal retries, retry_cached, retry_input
             depths = [max(self.settings.top_n, READOUT_PER_LABEL * len(b.labels))]
             depths += [d for d in READOUT_ESCALATION if d > depths[0]]
             for attempt, n_probs in enumerate(depths):
@@ -156,6 +162,8 @@ class EvaluationService:
                 if not missing:
                     return b, gen
                 retries += 1
+                retry_cached += gen.cached_tokens
+                retry_input += gen.total_prompt_tokens
                 logger.info("question %r: %d labels outside top-%d readout, retrying deeper", b.question_id, len(missing), n_probs)
             raise BackendError(
                 f"Question {b.question_id!r}: labels {missing} not in the top-{depths[-1]} readout; "
@@ -172,4 +180,4 @@ class EvaluationService:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
-        return results, retries
+        return results, retries, retry_cached, retry_input

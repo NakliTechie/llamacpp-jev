@@ -55,6 +55,10 @@ async def test_missing_labels_recover_on_retry(api, payload):
     assert response.status_code == 200, response.text
     assert response.headers["x-llamajev-readout-retries"] == "1"
     assert len(response.json()["answers"]["big"]["probabilities"]) == 64
+    # The failed first attempt ran on the backend and must be billed: warm (50) +
+    # failed attempt (80) + successful attempt (80); cached: failed (50) + successful (50).
+    assert response.json()["usage"]["input_tokens"] == 50 + 2 * 80
+    assert response.headers["x-llamajev-cached-tokens"] == str(2 * 50)
 
 
 async def test_structured_criteria_and_instructions(api):

@@ -222,6 +222,24 @@ reproduced on consumer Apple silicon with an unmodified `llama-server`. The 946 
 the 836 ms row only by `--cache-ram`; the 110 ms gap is within what a back-to-back thermal/GPU-clock
 swing produces here and was not re-measured.
 
+### Batch D record (2026-09-22, same model/host, refactored serving path `f0bd69c`, GPU uncontended)
+
+Re-run after the `f0bd69c` refactor (per-evaluation slot lease, in-context label check, readout
+escalation) to confirm the serving path still holds. Invocation: `llamajev serve --model
+Qwen3.5-2B-Q8_0.gguf --mmproj mmproj-F16.gguf --llama-server
+~/Code/llama.cpp-dev/build-metal/bin/llama-server --slots 4` (default config: slot pinning,
+`--cache-ram 0`). Live suite 5/5; concurrency 4 evaluations → 4 distinct leased slots, no 5xx.
+
+| Scenario | Config | Wall (median) | prefill | branches | Correct |
+|---|---|---|---|---|---|
+| 4 text questions, repeated | 4 slots, pinned, cache-ram 0 | 238 ms | 21 | 210 | — |
+| Same image repeated | 4 slots, pinned, cache-ram 0 | 254 ms | 20 | 232 | 4/4 |
+| **Fresh 448×448 image, 4 questions** (8 images) | 4 slots, pinned, cache-ram 0 | **526 ms** (525–546) | 292 | 232 | 32/32 |
+
+The three rows are directly comparable to the 2026-09-21 default-config rows above (946 / 493 / 381
+ms), but that run was serving another job on the same GPU, so the drop is partly load, not a proven
+code speedup. Readout retries were 0 across every request; `x-llamajev-readout-retries` never fired.
+
 **The stall.** With `--cache-ram 4096`, 4 slots and pinning, a repeated-image request after the
 fresh-image sweep stalls inside `llama-server` for > 60 s — 4 of 4 times through the wrapper and
 1 of 1 with a standalone script that talks to `llama-server` directly. A stack sample shows the
