@@ -161,8 +161,10 @@ def sanitize_url(url: str) -> str:
     try:
         parsed = httpx.URL(url)
         host = parsed.host or ""
+        if ":" in host:  # IPv6 literal needs brackets in a URL authority
+            host = f"[{host}]"
         port = f":{parsed.port}" if parsed.port else ""
-        return f"{parsed.scheme}://{host}{port}" if host else "the backend"
+        return f"{parsed.scheme}://{host}{port}" if parsed.host else "the backend"
     except (httpx.InvalidURL, ValueError):
         return "the backend"
 

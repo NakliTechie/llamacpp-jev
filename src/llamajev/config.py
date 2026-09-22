@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     max_image_pixels: int = Field(
         default=24_000_000, gt=0, description="Maximum width×height of a single image (decompression-bomb guard)."
     )
+    max_total_image_pixels: int = Field(
+        default=64_000_000, gt=0, description="Maximum summed width×height across all images in a request."
+    )
     temperature: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     top_n: int = Field(default=256, ge=2, description="n_probs requested per branch (readout depth).")
     pin_slot: bool = Field(

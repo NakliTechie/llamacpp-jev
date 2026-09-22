@@ -220,3 +220,12 @@ async def test_lone_surrogate_question_key_is_not_500(api):
     r = await client.post("/v1/systemone", content=body.encode("utf-8", "surrogatepass"),
                           headers={"content-type": "application/json"})
     assert r.status_code in {400, 422}, r.text
+
+
+async def test_lone_surrogate_criteria_key_is_not_500(api):
+    client, _ = api
+    body = ('{"model":"jev-latest","state":"x","questions":{"c":{"type":"choice","instructions":"x",'
+            '"criteria":{"\\ud800":"a","ok":"b"}}}}')
+    r = await client.post("/v1/systemone", content=body.encode("utf-8", "surrogatepass"),
+                          headers={"content-type": "application/json"})
+    assert r.status_code in {400, 422}, r.text

@@ -92,6 +92,10 @@ A `--connect` target must be started with `--ctx-checkpoints 32 --checkpoint-min
 server's own default is 8192) stalled for minutes on repeated image prompts under concurrent GPU
 load here ([docs/llama-server-checkpoint-stall.md](docs/llama-server-checkpoint-stall.md)).
 
+It binds `127.0.0.1` for a trusted local caller and has no authentication or rate limiting; body,
+image, and evaluation limits are bounded, but put an authenticated, rate-limited gateway in front
+before exposing it to an untrusted network.
+
 ## Verify it yourself
 
 ```bash

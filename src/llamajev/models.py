@@ -95,13 +95,14 @@ class SystemOneRequest(StrictModel):
 
     @model_validator(mode="after")
     def _json_encodable(self) -> "SystemOneRequest":
-        # Reject inputs that parse but cannot be re-serialized (ints beyond 64 bits, lone
-        # surrogates in question keys) up front, as a 422, instead of a 500 later when the
-        # state is forwarded to the backend or the answer keys are rendered.
+        # Reject inputs that parse but cannot be re-serialized (ints beyond 64 bits anywhere,
+        # lone surrogates in question keys or nested criteria keys) up front, as a 422, instead
+        # of a 500 later when the state is forwarded to the backend or the answer is rendered.
+        # Dump the whole request so nested question/criteria keys are covered, not just the top level.
         try:
-            orjson.dumps([self.state, list(self.questions.keys())])
+            orjson.dumps(self.model_dump(by_alias=True))
         except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(f"state or question keys are not JSON-encodable: {exc}") from exc
+            raise ValueError(f"request is not JSON-encodable: {exc}") from exc
         return self
 
 

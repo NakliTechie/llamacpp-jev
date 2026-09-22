@@ -35,11 +35,12 @@ def test_bad_role_rejected():
 
 
 def test_image_parts_need_vision():
-    chat = [{"role": "user", "content": [{"type": "text", "text": "what"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}]}]
+    img = _img()
+    chat = [{"role": "user", "content": [{"type": "text", "text": "what"}, {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img}"}}]}]
     with pytest.raises(ContentError):
         state_messages(chat, allow_images=False)
     messages, images = state_messages(chat, allow_images=True)
-    assert images == ["QUJD"]
+    assert images == [img]
     assert messages == chat
 
 
@@ -89,10 +90,16 @@ def test_marker_must_survive_template():
 
 # --- hardening: message alternation + image bounds ---
 
-def _png(width: int, height: int) -> str:
+def _img(width: int = 4, height: int = 4) -> str:
+    """Base64 of a real PNG of the given size (validation now decodes the header via Pillow)."""
     import base64
-    header = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x0dIHDR" + width.to_bytes(4, "big") + height.to_bytes(4, "big")
-    return base64.b64encode(header).decode()
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), "white").save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
 
 
 def test_no_two_consecutive_user_messages_when_state_ends_in_user():
@@ -114,12 +121,29 @@ def test_assistant_tail_gets_a_new_user_message():
 
 
 def test_too_many_images_rejected():
+    img = _img()
     chat = [{"role": "user", "content": [
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img}"}},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img}"}},
     ]}]
     with pytest.raises(ContentError, match="more than 1 image"):
         state_messages(chat, allow_images=True, max_images=1)
+
+
+def test_non_image_payload_rejected():
+    chat = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}]}]
+    with pytest.raises(ContentError, match="not a decodable image"):
+        state_messages(chat, allow_images=True)
+
+
+def test_lying_mime_still_validated_by_bytes():
+    # A real PNG declared as jpeg is fine (bytes win); text declared as an image is rejected.
+    ok = _img()
+    state_messages([{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{ok}"}}]}], allow_images=True)
+    import base64
+    junk = base64.b64encode(b"not an image at all").decode()
+    with pytest.raises(ContentError, match="not a decodable image"):
+        state_messages([{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{junk}"}}]}], allow_images=True)
 
 
 def test_oversized_image_bytes_rejected():
@@ -130,6 +154,24 @@ def test_oversized_image_bytes_rejected():
 
 
 def test_pixel_bomb_rejected():
-    chat = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_png(5000, 5000)}"}}]}]
+    chat = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_img(50, 50)}"}}]}]
     with pytest.raises(ContentError, match="pixel limit"):
-        state_messages(chat, allow_images=True, max_image_pixels=1000)
+        state_messages(chat, allow_images=True, max_image_pixels=100)
+
+
+def test_aggregate_pixel_budget():
+    img = _img(50, 50)  # 2500 px each
+    chat = [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img}"}},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img}"}},
+    ]}]
+    with pytest.raises(ContentError, match="request limit"):
+        state_messages(chat, allow_images=True, max_image_pixels=3000, max_total_image_pixels=4000)
+
+
+def test_build_messages_does_not_mutate_state():
+    state = [{"role": "user", "content": "hi"}]
+    req = SystemOneRequest(model="jev-latest", state=state, questions={"q": {"type": "noul", "instructions": "x"}})
+    build_messages(req, allow_images=False)
+    build_messages(req, allow_images=False)
+    assert req.state == [{"role": "user", "content": "hi"}]  # unchanged, no accumulated preamble

@@ -90,6 +90,7 @@ class EvaluationService:
                 max_images=self.settings.max_images,
                 max_image_bytes=self.settings.max_image_bytes,
                 max_image_pixels=self.settings.max_image_pixels,
+                max_total_image_pixels=self.settings.max_total_image_pixels,
             )
             rendered = await self.backend.apply_template(messages)
             prepared = self.compiler.compile(request, rendered, marker, images)
