@@ -44,9 +44,10 @@ curl http://127.0.0.1:8000/v1/systemone -H 'Content-Type: application/json' -d '
   }}'
 ```
 
-No config file, no account, no restart between models. `uv run llamajev smoke` sends a
-three-question request against a running server, so you can see the response shape without wiring a
-client first. For an image, make a `state` message whose content has an
+No config file, no account; each server instance serves the one model it launched with.
+`uv run llamajev smoke` sends a three-question request (three times) against a running server, so
+you can see the response shape without wiring a client first. For an image, make a `state` message
+whose content has an
 `{"type": "image_url", "image_url": {"url": "data:image/png;base64,…"}}` part.
 
 ## Why
@@ -81,15 +82,15 @@ and lands at or under the number (see below).
 ```bash
 uv run llamajev serve --model M.gguf --mmproj P.gguf --llama-server .../llama-server --slots 4  # launch llama-server + the API
 uv run llamajev serve --connect http://127.0.0.1:8080                                           # attach to a running llama-server
-uv run llamajev smoke [URL]                                                                     # one three-question request, prints timings
+uv run llamajev smoke [URL]                                                                     # three-question request x3, prints timings
 uv run python scripts/bench.py [URL] [--image f.png]                                            # per-phase timings from Server-Timing
 uv run python scripts/fresh_bench.py URL IMAGE_DIR                                              # cold per-image latency + correctness
 ```
 
 A `--connect` target must be started with `--ctx-checkpoints 32 --checkpoint-min-step 0 --cache-ram 0`
-(and `--mmproj` for images). `--cache-ram 0` matters: the default 8192 MiB stalled for minutes on
-repeated image prompts under concurrent GPU load here
-([docs/llama-server-checkpoint-stall.md](docs/llama-server-checkpoint-stall.md)).
+(and `--mmproj` for images). `--cache-ram 0` matters: a non-zero cache (reproduced at 4096 MiB; the
+server's own default is 8192) stalled for minutes on repeated image prompts under concurrent GPU
+load here ([docs/llama-server-checkpoint-stall.md](docs/llama-server-checkpoint-stall.md)).
 
 ## Verify it yourself
 
