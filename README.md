@@ -6,6 +6,8 @@ an image, and get a probability distribution per question back, from any GGUF, w
 
 *One wrapper process. macOS · Linux · Windows. No account, no telemetry. Text and vision.*
 
+<p align="center"><img src="marketing/social.png" alt="llamacpp-jev — typed questions to probabilities on an unmodified llama-server; 526 ms per fresh 448×448 image, 32/32 synthetic accuracy" width="760"></p>
+
 ![license MIT](https://img.shields.io/badge/license-MIT-555?style=flat-square)
 ![llama.cpp unpatched](https://img.shields.io/badge/llama.cpp-unpatched-555?style=flat-square)
 ![api /v1/systemone](https://img.shields.io/badge/api-%2Fv1%2Fsystemone-555?style=flat-square)
