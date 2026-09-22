@@ -79,6 +79,20 @@ Headers on every 200: `x-typesafe-request-id`, `x-llamajev-model`, `x-llamajev-p
 
 Other routes: `GET /v1/models`, `GET /v1/limits`, `GET /health`, `GET /health/live`, `GET /docs`, `GET /openapi.json`.
 
+### Compatibility with TypeSafe Jev and openjev-sglang
+
+| | TypeSafe Jev | openjev-sglang | llamajev |
+|---|---|---|---|
+| Question types | noul / choice / score | same | same |
+| Choice options | up to 255 | 2–64 | 2–64 (single-token labels) |
+| Score levels | ordered list | 2–64 | 2–64 |
+| Structured `instructions` / criteria (objects, arrays) | yes | instructions only | yes, serialized as JSON |
+| Null choice description → key is shown | yes | yes | yes |
+| Images in state | no | no | yes, `image_url` data URIs, needs `--mmproj` |
+| `confidence` | proprietary statistic | 1 − H/log n | 1 − H/log n |
+| `usage.input_tokens` | billing tokens | backend prompt counts incl. cache | backend prompt counts incl. cache |
+| Probabilities | calibrated (RLCD) | raw softmax over labels | raw softmax over labels — **not calibrated** |
+
 ## §2 Prompt compilation
 
 1. Build `messages = state_messages(state) + [user: PREAMBLE + "\n\n" + MARKER]` where
