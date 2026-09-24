@@ -132,3 +132,26 @@ async def test_props_parsing():
         "modalities": {"vision": True}, "default_generation_settings": {"n_ctx": 2048}}))
     props = await client.props()
     assert (props.n_slots, props.n_ctx, props.vision, props.media_marker) == (4, 2048, True, "<__media_x__>")
+
+
+async def test_token_ids_request_shape_and_parse():
+    seen = {}
+    body = {**COMPLETION, "completion_probabilities": [{"token": "A", "logprob": -0.05, "top_logprobs": [],
+        "token_ids_logprobs": [{"id": 33, "token": "B", "logprob": -3.1}, {"id": 32424, "token": "ZZ", "logprob": -19.4}]}]}
+
+    def handler(request):
+        seen.update(json.loads(request.content))
+        return httpx.Response(200, json=body)
+
+    gen = await make_client(handler).complete("x", token_ids=[33, 32424])
+    assert seen["token_ids_logprob"] == [33, 32424] and seen["n_probs"] == 0
+    assert gen.logprobs == {33: -3.1, 32424: -19.4}
+
+
+@pytest.mark.parametrize("entry,expected", [
+    ({"token": "A", "logprob": -0.1, "top_logprobs": [], "token_ids_logprobs": [{"id": 5, "logprob": -1.0}]}, True),
+    ({"token": "A", "logprob": -0.1, "top_logprobs": []}, False),  # unmodified server ignores the field
+])
+async def test_supports_token_ids_probe(entry, expected):
+    client = make_client(lambda request: httpx.Response(200, json={**COMPLETION, "completion_probabilities": [entry]}))
+    assert await client.supports_token_ids(5) is expected

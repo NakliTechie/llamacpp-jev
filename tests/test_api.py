@@ -172,6 +172,27 @@ async def test_models_limits_health(api):
     assert (await client.get("/health")).status_code == 503
 
 
+async def test_token_ids_readout_skips_escalation(payload):
+    backend = FakeBackend()
+    backend.readout_depth = 10  # a top-n readout would miss 54 of 64 labels
+    settings = Settings(top_n=256)
+    props = Props(model_path="/models/Qwen3.5-2B-Q8_0.gguf", n_ctx=8192, n_slots=4, vision=False, media_marker="<__media__>")
+    service = EvaluationService(settings, PromptCompiler(fake_labels()), backend, props, token_ids=True)
+    app = create_app(settings, service=service)
+    payload["questions"] = {"big": {"type": "choice", "instructions": "x", "criteria": {str(i): f"o{i}" for i in range(64)}}}
+    client = _httpx.AsyncClient(transport=_httpx.ASGITransport(app=app), base_url="http://test")
+    async with client, app.router.lifespan_context(app):
+        response = await client.post("/v1/systemone", json=payload)
+        health = await client.get("/health")
+    assert response.status_code == 200, response.text
+    assert response.headers["x-llamajev-readout-retries"] == "0"
+    assert len(response.json()["answers"]["big"]["probabilities"]) == 64
+    branch_calls = [c for c in backend.calls if "prompt" in c][1:]
+    assert len(branch_calls) == 1
+    assert branch_calls[0]["n_probs"] == 0 and len(branch_calls[0]["token_ids"]) == 64
+    assert health.json()["readout"] == "token_ids"
+
+
 # --- hardening: no credential/500 leaks, serialization edges ---
 
 

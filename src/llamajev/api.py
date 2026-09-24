@@ -104,7 +104,8 @@ def create_app(
                 await wait_ready(backend, process, settings.startup_timeout)
                 props = await backend.props()
                 compiler = PromptCompiler(await backend.verify_labels())
-                app.state.service = EvaluationService(settings, compiler, backend, props)
+                token_ids = settings.token_ids_readout and await backend.supports_token_ids(compiler.labels[0][1])
+                app.state.service = EvaluationService(settings, compiler, backend, props, token_ids)
                 app.state.startup_seconds = round(time.monotonic() - started, 2)
                 yield
         finally:
@@ -220,6 +221,7 @@ def create_app(
                 n_ctx=service.props.n_ctx,
                 vision=service.props.vision,
                 labels_verified=len(service.compiler.labels),
+                readout="token_ids" if service.token_ids else "top_n",
             )
         return ORJSONResponse(body, status_code=200 if healthy else 503)
 

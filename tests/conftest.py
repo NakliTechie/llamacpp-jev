@@ -43,10 +43,14 @@ class FakeBackend:
             parts.append(f"<|im_start|>{m['role']}\n{content}<|im_end|>\n")
         return "".join(parts)[: -len("<|im_end|>\n")] + ENDING
 
-    async def complete(self, prompt, *, images=None, n_probs=0, grammar=None, id_slot=None):
-        self.calls.append({"prompt": prompt, "images": images, "n_probs": n_probs, "grammar": grammar, "id_slot": id_slot})
+    async def complete(self, prompt, *, images=None, n_probs=0, token_ids=None, grammar=None, id_slot=None):
+        self.calls.append({"prompt": prompt, "images": images, "n_probs": n_probs, "token_ids": token_ids, "grammar": grammar, "id_slot": id_slot})
         if self.delay:
             await asyncio.sleep(self.delay)
+        if token_ids:
+            rank = {token_id: i for i, (_, token_id) in enumerate(fake_labels())}
+            logprobs = {token_id: -float(rank[token_id]) for token_id in token_ids}
+            return Generation(sampled="A", logprobs=logprobs, prompt_tokens=30, cached_tokens=50, id_slot=id_slot)
         if n_probs == 0:
             return Generation(sampled="Question", prompt_tokens=50, cached_tokens=0, id_slot=id_slot)
         labels = fake_labels()

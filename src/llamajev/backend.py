@@ -109,6 +109,7 @@ class LlamaClient:
         *,
         images: list[str] | None = None,
         n_probs: int = 0,
+        token_ids: list[int] | None = None,
         grammar: str | None = None,
         id_slot: int | None = None,
     ) -> Generation:
@@ -120,15 +121,25 @@ class LlamaClient:
             "n_probs": n_probs,
             "stream": False,
         }
+        if token_ids:
+            body["token_ids_logprob"] = token_ids
         if grammar:
             body["grammar"] = grammar
         if id_slot is not None:
             body["id_slot"] = id_slot
         data = json_object(await self._post("/completion", body), "/completion")
         try:
-            return parse_generation(data, n_probs > 0)
+            return parse_generation(data, n_probs > 0, bool(token_ids))
         except (ValueError, KeyError, TypeError, IndexError) as exc:
             raise BackendError(f"Invalid /completion response: {exc}") from exc
+
+    async def supports_token_ids(self, token_id: int) -> bool:
+        """True when llama-server returns exact per-id logprobs (`token_ids_logprob`, a proposed upstream
+        field); an unmodified server ignores the field, so the answer comes from the response shape."""
+        body = {"prompt": "Answer:", "n_predict": 1, "temperature": 0, "token_ids_logprob": [token_id]}
+        data = json_object(await self._post("/completion", body), "/completion")
+        positions = data.get("completion_probabilities")
+        return bool(positions) and isinstance(positions[0], dict) and "token_ids_logprobs" in positions[0]
 
     async def _get(self, path: str) -> httpx.Response:
         try:
@@ -205,21 +216,22 @@ def check(response: httpx.Response) -> httpx.Response:
     raise BackendError(f"llama-server returned HTTP {status}", 502, "backend_error")
 
 
-def parse_generation(data: dict, want_probs: bool) -> Generation:
+def parse_generation(data: dict, want_probs: bool, want_token_ids: bool = False) -> Generation:
     timings = data.get("timings")
     timings = timings if isinstance(timings, dict) else {}
     logprobs: dict[int, float] = {}
-    if want_probs:
+    if want_probs or want_token_ids:
         positions = data["completion_probabilities"]
         if len(positions) != 1:
             raise ValueError(f"expected one readout position, got {len(positions)}")
-        for entry in positions[0]["top_logprobs"]:
+        key = "token_ids_logprobs" if want_token_ids else "top_logprobs"
+        for entry in positions[0][key]:
             value = float(entry["logprob"])
             if math.isnan(value) or value == math.inf:
                 raise ValueError("non-finite logprob")
             logprobs[int(entry["id"])] = value
         if not logprobs:
-            raise ValueError("empty top_logprobs")
+            raise ValueError(f"empty {key}")
     id_slot = data.get("id_slot")
     return Generation(
         sampled=str(data.get("content", "")),

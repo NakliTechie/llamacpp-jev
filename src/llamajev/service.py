@@ -52,8 +52,11 @@ class SlotPool:
 
 
 class EvaluationService:
-    def __init__(self, settings: Settings, compiler: PromptCompiler, backend: LlamaClient, props: Props):
+    def __init__(
+        self, settings: Settings, compiler: PromptCompiler, backend: LlamaClient, props: Props, token_ids: bool = False
+    ):
         self.settings = settings
+        self.token_ids = token_ids  # backend returns exact per-id logprobs: no top-n depth, no escalation
         self.compiler = compiler
         self.backend = backend
         self.props = props
@@ -155,6 +158,17 @@ class EvaluationService:
 
         async def run(b: Branch):
             nonlocal retries, retry_cached, retry_input
+            if self.token_ids:
+                gen = await self.backend.complete(
+                    prefix + b.suffix,
+                    images=images or None,
+                    token_ids=b.label_ids,
+                    grammar=b.grammar,
+                    id_slot=slot,
+                )
+                if any(tid not in gen.logprobs for tid in b.label_ids):
+                    raise BackendError(f"Question {b.question_id!r}: llama-server omitted requested label ids")
+                return b, gen
             depths = [max(self.settings.top_n, READOUT_PER_LABEL * len(b.labels))]
             depths += [d for d in READOUT_ESCALATION if d > depths[0]]
             for attempt, n_probs in enumerate(depths):

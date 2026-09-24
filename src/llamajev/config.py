@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     )
     temperature: float = Field(default=1.0, gt=0, allow_inf_nan=False)
     top_n: int = Field(default=256, ge=2, description="n_probs requested per branch (readout depth).")
+    token_ids_readout: bool = Field(
+        default=True,
+        description=(
+            "Read exact per-label logprobs with `token_ids_logprob` when llama-server supports it "
+            "(detected at startup; a proposed upstream field). Off, or on an unmodified server, "
+            "the top-n readout with depth escalation is used."
+        ),
+    )
     pin_slot: bool = Field(
         default=True,
         description=(
