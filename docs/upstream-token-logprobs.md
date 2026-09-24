@@ -61,9 +61,11 @@ A string can tokenize to more than one token, and a readout at one position is t
 
 ## Prototype record (2026-09-25)
 
-- Branch `server-token-probs` in the worktree `~/Code/llama.cpp-tokprobs`, based on master `5cf3a35`. Uncommitted: llama.cpp's AGENTS.md asks for human approval of each commit. Patch copy: `docs/evidence/server-token-probs-5cf3a35.patch` (4 C++ files +66/-12, 1 test +27).
+- Branch `server-token-probs` in the worktree `~/Code/llama.cpp-tokprobs`, based on master `5cf3a35`. Uncommitted: llama.cpp's AGENTS.md asks for human approval of each commit. Patch copy: `docs/evidence/server-token-probs-5cf3a35.patch` (4 C++ files +66/-12, 1 test +31).
 - Build: `cmake --build build-metal --target llama-server` compiles with no errors or warnings in the changed files.
 - Raw server, Qwen3.5-2B-Q8_0, M4 Pro Metal: per-id values match an `n_probs=32768` readout within 3.1e-5 for 4 ids (ranks 3, 30, 186, 28,732). Median of 20: per-id 28.1 ms, `n_probs=256` 33.7 ms, `n_probs=32768` 99.1 ms. Bad id returns 400. The field also works on streamed `/completion` and on `/v1/chat/completions`.
 - The unmodified server (same commit, `bin-base/`) ignores the field and returns 200 without `token_ids_logprobs`. The wrapper detects support from that response shape.
 - llamacpp-jev on the patched server: `/health` shows `readout: token_ids`, `tests/test_live.py` passes 5/5, and 3 of 3 64-way requests return 200 with 0 retries. On the unpatched server: `readout: top_n`, 5/5 pass. Answers from the two servers differ by at most 1.7e-8 over 12 numbers.
-- Not run: upstream's `tools/server/tests` suite. It needs the `ggml-org/test-model-stories260K` download and the pip packages in `requirements.txt`.
+- Upstream suite, run from `tools/server/tests` with `LLAMA_SERVER_BIN_PATH=<bin>/llama-server python -m pytest unit/test_chat_completion.py unit/test_completion.py --deselect unit/test_completion.py::test_completion_stream_with_openai_library_stops`: patched 91 passed, 1 skipped; unpatched 90 passed, 1 skipped (new test deselected). The new test `test_n_probs_token_ids` fails on the unpatched binary (`KeyError: 'token_ids_logprobs'`) and passes on the patched one.
+- The deselected test downloads `bartowski/Phi-3.5-mini-instruct-GGUF` (multi-GB, not approved). It fails 3 of 3 on both binaries because the model is absent. Other `tools/server/tests/unit` files were not run.
+- A first version of the new test compared values across two requests and failed by 8.3e-4. The second request reused the prompt cache, the effect reported in #28368. The test now compares both lists inside one response, where they are equal.

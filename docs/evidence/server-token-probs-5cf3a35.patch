@@ -220,10 +220,10 @@ index 9c99143f8..84c2562a3 100644
      static json probs_vector_to_json(const std::vector<completion_token_output> & probs, bool post_sampling_probs);
  
 diff --git a/tools/server/tests/unit/test_completion.py b/tools/server/tests/unit/test_completion.py
-index 01732eb16..d45a3f31c 100644
+index 01732eb16..37994ff31 100644
 --- a/tools/server/tests/unit/test_completion.py
 +++ b/tools/server/tests/unit/test_completion.py
-@@ -531,6 +531,33 @@ def test_n_probs_post_sampling():
+@@ -531,6 +531,37 @@ def test_n_probs_post_sampling():
              # if the ones we did get already sum to 1.0.
              assert sum(p["prob"] for p in tok["top_probs"]) == pytest.approx(1.0)
  
@@ -237,19 +237,23 @@ index 01732eb16..d45a3f31c 100644
 +    }
 +    res = server.make_request("POST", "/completion", data={**data, "n_probs": 10})
 +    assert res.status_code == 200
-+    top = res.body["completion_probabilities"][0]["top_logprobs"]
-+    top_ids = [p["id"] for p in top]
++    top_ids = [p["id"] for p in res.body["completion_probabilities"][0]["top_logprobs"]]
 +    # one id from the top list, one outside it
 +    other_id = next(i for i in range(100, 500) if i not in top_ids)
 +    ids = [top_ids[3], other_id]
++    res = server.make_request("POST", "/completion", data={**data, "n_probs": 10, "token_ids_logprob": ids})
++    assert res.status_code == 200
++    tok = res.body["completion_probabilities"][0]
++    top = {p["id"]: p["logprob"] for p in tok["top_logprobs"]}
++    probs = tok["token_ids_logprobs"]
++    assert [p["id"] for p in probs] == ids
++    assert probs[0]["logprob"] == top[ids[0]]
++    assert probs[1]["logprob"] < min(top.values())
 +    res = server.make_request("POST", "/completion", data={**data, "token_ids_logprob": ids})
 +    assert res.status_code == 200
 +    tok = res.body["completion_probabilities"][0]
 +    assert tok["top_logprobs"] == []
-+    probs = tok["token_ids_logprobs"]
-+    assert [p["id"] for p in probs] == ids
-+    assert probs[0]["logprob"] == pytest.approx(top[3]["logprob"], abs=1e-5)
-+    assert probs[1]["logprob"] < top[-1]["logprob"]
++    assert [p["id"] for p in tok["token_ids_logprobs"]] == ids
 +    res = server.make_request("POST", "/completion", data={**data, "token_ids_logprob": [-1]})
 +    assert res.status_code == 400
 +
