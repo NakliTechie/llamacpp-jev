@@ -41,7 +41,7 @@ Facts to draw on:
 - Prototype: branch `server-token-probs` in `~/Code/llama.cpp-tokprobs`. 4 C++ files, +66/-12 lines. One new test in the existing `tools/server/tests/unit/test_completion.py`, +31 lines. Upstream `test_completion.py` + `test_chat_completion.py`: 91 passed on the patched build; the same 90 existing tests pass on the unpatched build.
 - It reuses `get_token_probabilities` (`server-common.cpp:1526`), the `server-schema.cpp` field system and the `completion_token_output` JSON. No existing output changes.
 - An id outside `[0, n_vocab)` returns HTTP 400. `logit_bias`, by contrast, drops bad ids silently.
-- Accuracy check: per-id values match an `n_probs=32768` readout within 3.1e-5 for all 4 ids. The offset is the same for every id, which is consistent with float32 rounding in the softmax sum.
+- Accuracy check: per-id values match an `n_probs=32768` readout within 3.1e-5 for all 4 ids. The two reads were separate requests, and the offset is the same for every id. Prompt-cache reuse (#28368) or float32 summation order can explain it; neither was isolated. Inside one response the per-id and top-N values are equal (upstream test).
 - Works on `/completion`, streamed `/completion`, and `/v1/chat/completions` (the key appears in `logprobs.content[]`).
 - Design options and rejected alternatives: `docs/upstream-token-logprobs.md`.
 - The rules say features start as an issue and a PR follows only after maintainer interest. Whether to mention the prototype is the author's call.
