@@ -16,3 +16,6 @@ venv/
 /vendor/
 /models/
 *.gguf
+# Promo output (regenerable; /windup-nt sweeps it)
+/marketing
+/brag-output*
